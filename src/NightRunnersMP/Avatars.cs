@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using NightRunnersMP.Shared;
@@ -14,6 +14,7 @@ internal static class Avatars
     private const int Size = Protocol.AvatarSide;
     private const float TagAlpha = 0.6f;
     private const int TagFontSize = 15;
+    private static readonly Color TagShadow = new(0f, 0f, 0f, 0.85f);
 
     // racer card font, once a card has been seen
     private const string GameFont = "Karma";
@@ -94,20 +95,38 @@ internal static class Avatars
             GUI.Label(new Rect(rect.center.x - 5, rect.center.y - 11, rect.width, 24), name.Substring(0, 1).ToUpperInvariant());
     }
 
-    public static void DrawTag(Vector2 screen, Remote remote)
+    public static void DrawTag(Vector2 screen, Remote remote, float fade, float scale)
     {
-        var picture = remote.IsBot ? 0 : 38;
-        var width = picture + 122;
-        var box = new Rect(screen.x - width / 2f, screen.y - 40, width, 40);
-        var color = GUI.color;
-        GUI.color = new Color(color.r, color.g, color.b, TagAlpha);
-        GUI.DrawTexture(box, Texture2D.blackTexture);
-        GUI.color = color;
-        if (!remote.IsBot)
-            Draw(new Rect(box.x + 4, box.y + 4, 32, 32), remote.Avatar, remote.HasPicture, remote.Name);
+        if (fade <= 0f)
+            return;
         if (_tagStyle == null || _tagStyle.font != TagFont)
-            _tagStyle = new GUIStyle(GUI.skin.label) { font = TagFont, fontSize = TagFontSize, richText = false };
-        GUI.Label(new Rect(box.x + picture + 4, box.y + 8, 116, 24), remote.Tag, _tagStyle);
+            _tagStyle = new GUIStyle(GUI.skin.label) { font = TagFont, richText = false, wordWrap = false, clipping = TextClipping.Clip };
+        _tagStyle.fontSize = Mathf.Max(10, Mathf.RoundToInt(TagFontSize * scale));
+
+        var picSide = remote.IsBot ? 0f : Mathf.Round(32 * scale);
+        var pad = Mathf.Round(4 * scale);
+        var text = new GUIContent(remote.Tag);
+        var textSize = _tagStyle.CalcSize(text);
+        var textWidth = Mathf.Min(textSize.x, 200 * scale);
+        var height = Mathf.Max(picSide, textSize.y) + pad * 2;
+        var width = pad + (picSide > 0 ? picSide + pad : 0) + textWidth + pad;
+        var box = new Rect(Mathf.Round(screen.x - width / 2f), Mathf.Round(screen.y - height), width, height);
+        if (box.xMax < 0 || box.x > Screen.width || box.yMax < 0 || box.y > Screen.height)
+            return;
+
+        var color = GUI.color;
+        GUI.color = new Color(color.r, color.g, color.b, TagAlpha * fade);
+        GUI.DrawTexture(box, Texture2D.blackTexture);
+        GUI.color = new Color(color.r, color.g, color.b, fade);
+        if (picSide > 0)
+            Draw(new Rect(box.x + pad, box.y + (height - picSide) / 2f, picSide, picSide), remote.Avatar, remote.HasPicture, remote.Name);
+        var label = new Rect(box.x + pad + (picSide > 0 ? picSide + pad : 0), box.y + (height - textSize.y) / 2f, textWidth, textSize.y);
+        var white = _tagStyle.normal.textColor;
+        _tagStyle.normal.textColor = new Color(TagShadow.r, TagShadow.g, TagShadow.b, TagShadow.a * fade);
+        GUI.Label(new Rect(label.x + 1, label.y + 1, label.width, label.height), text, _tagStyle);
+        _tagStyle.normal.textColor = white;
+        GUI.Label(label, text, _tagStyle);
+        GUI.color = color;
     }
 
     private static Texture2D Keep(Texture2D texture)

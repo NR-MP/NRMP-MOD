@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using BepInEx.Logging;
@@ -19,6 +19,9 @@ public class NetBehaviour : MonoBehaviour
     private const string NoMap = "\n\n";
     private const float ReconnectSeconds = 5f;
     private const int NameLabelRange = 100;
+    private const float NameFadeStart = 75f;
+    private const float TagSettleSeconds = 2f;
+    private float _tagsBackAt;
     // players further than this keep the placeholder (and stay hidden), a spawn only starts once they come closer
     private const float LoadMetres = 300f;
     // a spawned car stays until it's this far, so someone on the edge doesn't flick on and off
@@ -741,6 +744,7 @@ public class NetBehaviour : MonoBehaviour
         {
             var visible = !personal && remote.Interp.HasData && (remote.Interp.Scene == _scene || _race.IsRival(remote)) && (_car != null || _race.IsRival(remote)) && _race.Shows(remote)
                 && Near(remote, now, offset);
+            remote.Shown = visible;
             if (visible && SpawnRealCars && remote.NeedsSpawn)
                 _cars.Request(remote);
 
@@ -903,10 +907,12 @@ public class NetBehaviour : MonoBehaviour
                 GUI.Label(new Rect((Screen.width - width) / 2f, 10, width, 24), bar);
             }
             var camera = Camera.main;
-            if (camera == null)
+            if (camera == null || TagsHidden())
                 return;
             foreach (var remote in _remotes.Values)
             {
+                if (!remote.Shown)
+                    continue;
                 var target = remote.Car != null ? remote.Car : remote.Placeholder;
                 if (RemoteWalkers.TryGetTag(remote, out var head))
                     DrawTag(camera, head, remote);
@@ -923,12 +929,44 @@ public class NetBehaviour : MonoBehaviour
         }
     }
 
+    // OnGUI draws over loading screens
+    private bool TagsHidden()
+    {
+        if (TagsBlockedNow())
+        {
+            _tagsBackAt = Time.unscaledTime + TagSettleSeconds;
+            return true;
+        }
+        return Time.unscaledTime < _tagsBackAt;
+    }
+
+    private bool TagsBlockedNow()
+    {
+        if (InPersonalScene)
+            return true;
+        var god = GodConstant.Instance;
+        if (god == null)
+            return true;
+        if (god.loading_StayInLoadingScreen || god.cinematic_playing || god.gameIsPaused)
+            return true;
+        var ui = god.UI_Data;
+        return ui != null && (ui.loading_fadingToBlack || ui.loading_screenIsBlack);
+    }
+
     [HideFromIl2Cpp]
-    private static void DrawTag(Camera camera, Vector3 position, Remote remote)
+    private void DrawTag(Camera camera, Vector3 position, Remote remote)
     {
         var p = camera.WorldToScreenPoint(position);
-        if (p.z > 0 && p.z < NameLabelRange)
-            Avatars.DrawTag(new Vector2(p.x, Screen.height - p.y), remote);
+        if (p.z <= 0)
+            return;
+        var distance = Vector3.Distance(camera.transform.position, position);
+        if (_car != null)
+            distance = Mathf.Max(distance, Vector3.Distance(_car.transform.position, position) - NameTagHeight);
+        if (distance >= NameLabelRange)
+            return;
+        var fade = Mathf.Clamp01((NameLabelRange - distance) / (NameLabelRange - NameFadeStart));
+        var scale = Mathf.Lerp(1.1f, 0.8f, distance / NameLabelRange);
+        Avatars.DrawTag(new Vector2(p.x, Screen.height - p.y), remote, fade, scale);
     }
 
     private void ClearRemotes()

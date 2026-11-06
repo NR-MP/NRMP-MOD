@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using BepInEx.Logging;
 using Il2CppInterop.Runtime;
@@ -28,6 +28,7 @@ internal sealed class Remote
     public Vector3 RestOffset;
     public float NextRest;
     public bool RestLogged;
+    public bool Shown;
     public WalkState Walk;
     public float WalkSeen;
     public character_animController Figure;
