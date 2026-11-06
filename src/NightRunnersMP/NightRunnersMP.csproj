@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>NightRunnersMP</AssemblyName>
+    <RootNamespace>NightRunnersMP</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GameDir Condition="'$(GameDir)' == ''">$(MSBuildThisFileDirectory)..\..\..\Game\Night Runners Private Alpha v3.27</GameDir>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <DebugType>embedded</DebugType>
+    <!-- The bundled game runtime is what actually runs this, so skip the end-of-support warning. -->
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\*.cs" Link="Shared\%(Filename)%(Extension)" />
+    <PackageReference Include="LiteNetLib" Version="1.3.1" />
+    <Reference Include="$(GameDir)\BepInEx\core\BepInEx.Core.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\core\BepInEx.Unity.IL2CPP.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\core\Il2CppInterop.Runtime.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Il2Cppmscorlib.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Assembly-CSharp.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Assembly-CSharp-firstpass.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UniTask.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.AssetBundleModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.AudioModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.CoreModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.IMGUIModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Unity.TextMeshPro.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.ImageConversionModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.VideoModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.AnimationModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.TextRenderingModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.PhysicsModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.ParticleSystemModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.VehiclesModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.UI.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.UIModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Rewired_Core.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Vendor.AzureSky.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Unity.Addressables.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Unity.ResourceManager.dll" Private="false" />
+  </ItemGroup>
+
+  <Target Name="CopyToPlugins" AfterTargets="Build">
+    <ItemGroup>
+      <PluginFiles Include="$(OutDir)NightRunnersMP.dll;$(OutDir)LiteNetLib.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(GameDir)\BepInEx\plugins\NightRunnersMP" />
+    <ItemGroup>
+      <MenuArt Include="ui\*.png" />
+      <MenuArt Include="ui\splashes.txt" />
+    </ItemGroup>
+    <Copy SourceFiles="@(MenuArt)" DestinationFolder="$(GameDir)\BepInEx\plugins\NightRunnersMP\ui" />
+  </Target>
+
+</Project>
