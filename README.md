@@ -1,6 +1,6 @@
 <div align="center">
   
-# Night Runners multiplayer (NRMP)
+# Night Runners multiplayer MOD (NRMP)
 
 Source of the NRMP mod. Made by MILLIYEN. BY MODDERS FOR MODDERS.
 
