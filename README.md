@@ -37,6 +37,8 @@ Build against the interop of the game version you play on, 3.2.7 and 3.2.8 each 
 
 - `[Server]`: `Host`, `Port`, `JoinKey`
 
+Join the discord to join the server <a href="https://discord.gg/ERk9SxD4Ec"><img src="https://img.shields.io/badge/Discord-Join%20for%20support-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord for support"></a>
+
 ## Credits
 
 BepInEx, Il2CppInterop and LiteNetLib, all rights stay with their authors. Big credit to PlanetJem for Night Runners.
