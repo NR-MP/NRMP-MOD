@@ -42,7 +42,7 @@ Join the discord to for the server info!
 ## Credits
 
 BepInEx, Il2CppInterop and LiteNetLib, all rights stay with their authors. Big credit to PlanetJem for Night Runners.
-
+The IL2CPP fix was made with the help of Claude (Anthropic).
 
 ## PS
 
