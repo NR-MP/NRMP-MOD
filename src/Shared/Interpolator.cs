@@ -99,6 +99,13 @@ public sealed class Interpolator
         _highest = Math.Max(_highest, transit);
     }
 
+    // newest position as sent, no playback. sampling moves the playback on, this doesn't
+    public bool TryLast(out Vector3 position)
+    {
+        position = _count > 0 ? _buffer[_count - 1].Position : default;
+        return _count > 0;
+    }
+
     public bool TrySample(double localNowMs, out Vector3 position, out Quaternion rotation)
     {
         position = default;

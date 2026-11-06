@@ -329,6 +329,10 @@ internal sealed class MultiplayerMenu
     private void DrawTeleport(ICollection<Remote> remotes)
     {
         var rows = new List<Teleports.Place> { new() { Name = "Players", Kind = $"{PlayersHere(remotes).Count:00} HERE" } };
+        // way out for when the game won't give you the get in prompt
+        var god = GodConstant.Instance;
+        if (god != null && god.scene_currentType == GodConstant.Scene_currentType.MEETSPOT)
+            rows.Add(new() { Name = "Leave PA", Kind = "EXIT", Run = () => _teleports.LeavePa() });
         rows.AddRange(_places);
         DrawPlaces(rows, 1);
     }

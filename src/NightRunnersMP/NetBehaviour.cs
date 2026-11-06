@@ -18,7 +18,11 @@ public class NetBehaviour : MonoBehaviour
 {
     private const string NoMap = "\n\n";
     private const float ReconnectSeconds = 5f;
-    private const int NameLabelRange = 300;
+    private const int NameLabelRange = 100;
+    // players further than this keep the placeholder (and stay hidden), a spawn only starts once they come closer
+    private const float LoadMetres = 300f;
+    // a spawned car stays until it's this far, so someone on the edge doesn't flick on and off
+    private const float UnloadMetres = 400f;
     private const float RestSeconds = 2f;
     private const float PaintSeconds = 1f;
     private const float NameTagHeight = 2f;
@@ -735,7 +739,8 @@ public class NetBehaviour : MonoBehaviour
         var personal = InPersonalScene;
         foreach (var remote in _remotes.Values)
         {
-            var visible = !personal && remote.Interp.HasData && (remote.Interp.Scene == _scene || _race.IsRival(remote)) && (_car != null || _race.IsRival(remote)) && _race.Shows(remote);
+            var visible = !personal && remote.Interp.HasData && (remote.Interp.Scene == _scene || _race.IsRival(remote)) && (_car != null || _race.IsRival(remote)) && _race.Shows(remote)
+                && Near(remote, now, offset);
             if (visible && SpawnRealCars && remote.NeedsSpawn)
                 _cars.Request(remote);
 
@@ -777,6 +782,17 @@ public class NetBehaviour : MonoBehaviour
             _menu.AtDealer = _welcomed && _car != null && _dealer.IsNear(_car.transform.position);
             _menu.Ping = _peer != null ? _peer.Ping : -1;
         }
+    }
+
+    [HideFromIl2Cpp]
+    private bool Near(Remote remote, double now, Num.Vector3 offset)
+    {
+        if (_car == null || _race.IsRival(remote) || _parking.Inside)
+            return true;
+        if (!remote.Interp.TryLast(out var world))
+            return true;
+        var range = remote.Car != null && remote.Car.activeSelf ? UnloadMetres : LoadMetres;
+        return Vector3.Distance(ToUnity(_origin.ToLocal(world, offset)), _car.transform.position) < range;
     }
 
     // set down again now and then, ground under a space can stream in after the car

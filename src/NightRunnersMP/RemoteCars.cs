@@ -42,6 +42,7 @@ internal sealed class Remote
     public int SpawnTries;
     public int Fitted;
     public int Rebuilds;
+    public float RebuiltAt;
     public string WheelsSeen;
     public System.Action<GameObject> Built;
     public string MapId = "";
@@ -102,6 +103,7 @@ internal sealed class RemoteCars
     private float _deadline;
     private float _retryAt;
     private int _wanted;
+    private readonly List<(GameObject Part, int Layer)> _ownLayers = new();
 
     public System.Action<Remote> CarReady;
 
@@ -121,6 +123,7 @@ internal sealed class RemoteCars
 
     public void Tick(RCC_CarControllerV3 localCar, Vector3 fallbackSpawn, bool hold, meetSpot spot)
     {
+        _game.Watch(localCar);
         if (_current != null)
         {
             Poll(localCar);
@@ -167,6 +170,7 @@ internal sealed class RemoteCars
             _spawnPoint = new GameObject("NRMP spawn point");
         _spawnPoint.transform.position = remote.LocalPosition ?? fallbackSpawn;
 
+        RememberOwnLayers();
         _log.LogInfo($"Spawning model {CarKey.Model(remote.Model)} ({remote.Model}) for {remote.Name}");
         _current = remote;
         _wanted = remote.Model;
@@ -179,7 +183,9 @@ internal sealed class RemoteCars
         {
             var routine = _parent.StockCarSpawn(CarKey.Model(remote.Model), setup, _spawnPoint.transform, true, false, true);
             _spawn = routine.TryCast<CarParent._StockCarSpawn_d__124>();
+            var start = SlowStep.Start();
             _parent.StartCoroutine(routine);
+            SlowStep.Stop(start, $"the game spawning {remote.Name}'s car");
         });
     }
 
@@ -199,6 +205,8 @@ internal sealed class RemoteCars
         }
 
         _parent.StockCarSpawn_result = null;
+        // before the model check, a swapped spawn left my car on Traffic and there was no get in prompt in the PA
+        RestoreLocalPlayer(localCar);
         if (!IsWanted(result))
             return;
         Forget(_current);
@@ -206,7 +214,6 @@ internal sealed class RemoteCars
         result.transform.SetParent(null);
         StartWheels(result);
         MakeGhost(result);
-        RestoreLocalPlayer(localCar);
         if (_current.Built != null)
         {
             _current.Built(result);
@@ -447,5 +454,32 @@ internal sealed class RemoteCars
             _log.LogWarning("Spawn replaced GodConstant.playerCar, restoring it");
             god.playerCar = localCar;
         }
+        RestoreOwnLayers();
+    }
+
+    // a spawn can leave my own car's body collider on Traffic, the PA look ray skips that layer and there's no get in prompt
+    private void RememberOwnLayers()
+    {
+        _ownLayers.Clear();
+        var local = NetBehaviour.LocalCar;
+        if (local == null)
+            return;
+        foreach (var part in local.GetComponentsInChildren<Transform>(true))
+            _ownLayers.Add((part.gameObject, part.gameObject.layer));
+    }
+
+    private void RestoreOwnLayers()
+    {
+        var moved = new List<string>();
+        foreach (var (part, layer) in _ownLayers)
+        {
+            if (part == null || part.layer == layer)
+                continue;
+            moved.Add($"{part.name} {LayerMask.LayerToName(part.layer)}");
+            part.layer = layer;
+        }
+        _ownLayers.Clear();
+        if (moved.Count > 0)
+            _log.LogWarning($"Spawn moved {moved.Count} parts of my car to other layers, put back: {string.Join(", ", moved.Take(5))}");
     }
 }

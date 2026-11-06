@@ -201,6 +201,8 @@ internal sealed class RemoteBuilds
     private const float WatchSeconds = 1f;
     private const float MinWhole = 0.8f;
     private const int MaxRebuilds = 2;
+    // a car that stayed whole this long after its last rebuild lost parts to something new (garage, loading screen), not a loop
+    private const float RebuildFreshSeconds = 60f;
     private static readonly HashSet<string> HeldCatalogs = new();
 
     private readonly ManualLogSource _log;
@@ -300,12 +302,23 @@ internal sealed class RemoteBuilds
             return;
         }
         var parts = _job.Parts.Count;
+        var start = SlowStep.Start();
+        var name = _remote.Name;
         if (_step < parts)
+        {
             Fit(car, _job.Parts[_step]);
+            SlowStep.Stop(start, $"fitting {_job.Parts[_step].PartType} on {name}'s car");
+        }
         else if (_step < parts + _job.SubParts.Count)
+        {
             FitSubParts(car, _job.SubParts[_step - parts]);
+            SlowStep.Stop(start, $"sub parts on {name}'s car");
+        }
         else
+        {
             Finish(car);
+            SlowStep.Stop(start, $"finishing {name}'s car");
+        }
         _step++;
     }
 
@@ -332,7 +345,9 @@ internal sealed class RemoteBuilds
                 _ownWheel = _parent.whlCustom;
                 var routine = _parent.load_customization(origin, front, origin.carOrigin_engines[0].engineType, CarParent.ParentType._all);
                 _catalog = routine.TryCast<CarParent._load_customization_d__82>();
+                var start = SlowStep.Start();
                 _parent.StartCoroutine(routine);
+                SlowStep.Stop(start, $"loading the part catalogs for {_remote.Name}'s car");
             }
             catch (Exception e)
             {
@@ -413,12 +428,15 @@ internal sealed class RemoteBuilds
         var whole = Whole(remote.Car);
         if (whole >= remote.Fitted * MinWhole && !wheelsGone)
             return;
+        if (remote.Rebuilds > 0 && Time.unscaledTime - remote.RebuiltAt > RebuildFreshSeconds)
+            remote.Rebuilds = 0;
         var again = remote.Rebuilds < MaxRebuilds;
         _log.LogWarning($"{remote.Name}'s car lost parts, {whole} of {remote.Fitted} left, {(again ? "building it again" : "giving up")}");
         remote.Fitted = 0;
         if (!again)
             return;
         remote.Rebuilds++;
+        remote.RebuiltAt = Time.unscaledTime;
         remote.BuildOn = null;
     }
 
@@ -630,6 +648,7 @@ internal sealed class RemoteBuilds
         {
             _log.LogWarning($"{_remote.Name}'s car skipped {_skipped - _neverFit} parts that could fit, building it again");
             _remote.Rebuilds++;
+            _remote.RebuiltAt = Time.unscaledTime;
             _remote.BuildOn = null;
         }
         _remote = null;

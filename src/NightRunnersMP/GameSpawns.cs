@@ -10,6 +10,8 @@ internal sealed class GameSpawns
 {
     // after walking into a PA, the racers are queued and built one after another
     private const float EnterHoldSeconds = 8f;
+    // loading in from the menu can drop you straight in a PA, the game knows the car seconds before it knows the PA
+    private const float LoadHoldSeconds = 12f;
     // never hold longer than this after entering, in case the racer list never empties
     private const float MaxSpotHoldSeconds = 30f;
     // no new car for this long counts as quiet
@@ -19,6 +21,8 @@ internal sealed class GameSpawns
     private readonly ManualLogSource _log;
     private meetSpot _spot;
     private float _spotSince;
+    private RCC_CarControllerV3 _car;
+    private float _carSince;
     private int _carCount = -1;
     private float _nextCount;
     private float _quietAt;
@@ -29,6 +33,15 @@ internal sealed class GameSpawns
 
     // our own spawn just ended, so the next count change is ours, not the game's
     public void OursDone() => _rebase = true;
+
+    // every frame, a new own car means the game just loaded you in somewhere
+    public void Watch(RCC_CarControllerV3 car)
+    {
+        if (car == _car)
+            return;
+        _car = car;
+        _carSince = Time.unscaledTime;
+    }
 
     public bool Hold(CarParent parent, meetSpot spot)
     {
@@ -55,6 +68,8 @@ internal sealed class GameSpawns
     {
         if (parent != null && parent.loading_custom)
             return "game is loading a car customization";
+        if (_car != null && now - _carSince < LoadHoldSeconds)
+            return "game just loaded your car";
         if (_spot != null)
         {
             var inside = now - _spotSince;

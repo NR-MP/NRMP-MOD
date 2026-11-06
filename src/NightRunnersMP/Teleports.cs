@@ -70,6 +70,8 @@ internal sealed class Teleports
         return places;
     }
 
+    public string LeavePa() => _leavePa();
+
     public Place FirstPa() => Places().Find(p => p.Kind == "PA");
 
     // player in a PA is inside it, closest on the road is the entrance

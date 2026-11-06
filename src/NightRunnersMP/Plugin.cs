@@ -9,9 +9,9 @@ public class Plugin : BasePlugin
 {
     public const string Guid = "com.nightrunners.multiplayer";
     public const string Name = "Night Runners Multiplayer";
-    public const string Version = "0.1.3b1";
+    public const string Version = "0.1.4b2";
     // bepinex wants plain semver, the b doesn't parse
-    public const string SemVer = "0.1.3";
+    public const string SemVer = "0.1.4";
 
     public override void Load()
     {
