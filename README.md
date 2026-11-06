@@ -37,7 +37,7 @@ Build against the interop of the game version you play on, 3.2.7 and 3.2.8 each 
 
 - `[Server]`: `Host`, `Port`, `JoinKey`
 
-Join the discord to join the server <a href="https://discord.gg/ERk9SxD4Ec"></a>
+Join the discord to for the server info!
 
 ## Credits
 
