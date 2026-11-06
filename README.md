@@ -9,6 +9,7 @@ Source of the NRMP mod. Made by MILLIYEN. BY MODDERS FOR MODDERS.
 <img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
 <img src="https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET Framework 4.8">
 <img src="https://img.shields.io/badge/admin-not%20needed-2EA043?style=flat-square" alt="No admin needed">
+</div>
 
 BepInEx 6 IL2CPP mod for Night Runners Private Alpha 3.2.7 and 3.2.8. Unofficial fan mod, not affiliated with PlanetJem.
 This is just the mod. The server and the launcher aren't in here.
