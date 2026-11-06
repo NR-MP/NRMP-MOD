@@ -19,10 +19,6 @@ This is just the mod. The server and the launcher aren't in here.
 - `src/NightRunnersMP`: the mod
 - `src/Shared`: wire format, interpolation and origin conversion, compiled into the mod
 
-## A note from me
-
-I was never too keen on comments, so i did my best to explain everything that's going on in the code. Any questions, feel free to find me in the NRMP Discord.
-
 ## Build
 
 You need the .NET SDK and the game with my patched BepInEx for Unity 6.6 in it, interop included. No game files are in this repo, the build references them from your game folder.
