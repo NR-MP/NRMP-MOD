@@ -1,6 +1,13 @@
 # Night Runners multiplayer (NRMP)
 
 Source of the NRMP mod. Made by MILLIYEN. BY MODDERS FOR MODDERS.
+<a href="https://discord.gg/ERk9SxD4Ec"><img src="https://img.shields.io/badge/Discord-Join%20for%20support-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the Discord for support"></a>
+<a href="../../releases"><img src="https://img.shields.io/badge/Download-Releases-E0002B?style=for-the-badge&logo=github&logoColor=white" alt="Download from Releases"></a>
+<a href="docs/LAUNCHER.md"><img src="https://img.shields.io/badge/What%20it%20touches-LAUNCHER.md-30363D?style=for-the-badge&logo=readthedocs&logoColor=white" alt="What the launcher touches"></a>
+
+<img src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows">
+<img src="https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET Framework 4.8">
+<img src="https://img.shields.io/badge/admin-not%20needed-2EA043?style=flat-square" alt="No admin needed">
 
 BepInEx 6 IL2CPP mod for Night Runners Private Alpha 3.2.7 and 3.2.8. Unofficial fan mod, not affiliated with PlanetJem.
 This is just the mod. The server and the launcher aren't in here.
