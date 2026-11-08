@@ -110,9 +110,12 @@ public class NetBehaviour : MonoBehaviour
     public NetBehaviour(IntPtr ptr) : base(ptr) { }
 
     private Lobby _lobby;
+    private GarageTv _tv;
     private MultiplayerMenu _menu;
     private ChatBox _chat;
     private HideUi _hideUi;
+    private CarDoors _doors;
+    private byte _sentDoors;
     private Traffic _traffic;
     private PlayerRace _race;
     private RaceCall _call;
@@ -123,7 +126,6 @@ public class NetBehaviour : MonoBehaviour
     // from the welcome, what this pc signs so the server knows it's the same pc as last time
     private byte[] _nonce;
     private CarPicker _picker;
-    private DealerSpot _dealer;
     private EntryWatch _entries;
     private bool _online;
 
@@ -139,9 +141,9 @@ public class NetBehaviour : MonoBehaviour
         _cards = new PlayerCards(Log);
         _cars.CarReady = StartBuild;
         _builds.Spawning = () => _cars.Busy;
-        _lobby = new Lobby(Log, ReadSteam, SetOnline, SpawnStop, SkipIntro);
+        _lobby = new Lobby(Log, SetOnline, SkipIntro);
+        _tv = new GarageTv(Log, ReadSteam, () => _online, SetOnline, AskStatus);
         _picker = new CarPicker(Log, _cars);
-        _dealer = new DealerSpot(Log);
         _entries = new EntryWatch(Log);
         // tools/two-players.bat runs two games, the one you tabbed out of has to keep going
         // the game has no setter for this in its dll, so it may not take
@@ -158,6 +160,7 @@ public class NetBehaviour : MonoBehaviour
         }
         _chat = new ChatBox(Log, SendChat);
         _hideUi = new HideUi(Log);
+        _doors = new CarDoors(Log);
         _traffic = new Traffic(Log);
         _race = new PlayerRace(Log, SendRace, () => _parking.CurrentSpot, _remotes, text => _chat.AddNotice(text), () => PlayerStats.OwnTag(_myName));
         _call = new RaceCall(Log, _race, () => PlayerStats.OwnTag(_myName));
@@ -165,12 +168,12 @@ public class NetBehaviour : MonoBehaviour
         _teleports = new Teleports(Log, _parking.Leave, text => _chat.AddNotice(text));
         _crash = new CrashGuard(Log, text => _chat.AddNotice(text));
         _hits = new CarHits(Log, SendHit);
-        _maps = new Maps(Log, _teleports, text => _chat.AddNotice(text)) { Changed = UpdateScene };
+        _maps = new Maps(Log, _teleports, text => _chat.AddNotice(text)) { Changed = () => { _crash.Reset(); UpdateScene(); } };
         _menu = new MultiplayerMenu(Log, _picker, _crews, _race, _teleports, _maps, LocatePlayer, ApplyCollisions, _traffic);
         // bots have no setting to send, they're always solid
         RemoteCars.TheyAreSolid = car => _remotes.Values.FirstOrDefault(r => r.Car == car) is not { } r || r.IsBot || r.Drive.Solid;
         _listener = new Listener(this);
-        _net = new NetManager(_listener) { AutoRecycle = true, DisconnectTimeout = 10000, EnableStatistics = true };
+        _net = new NetManager(_listener) { AutoRecycle = true, DisconnectTimeout = 10000, EnableStatistics = true, UnconnectedMessagesEnabled = true };
         _net.Start();
         // no GUILayout anywhere so OnGUI can skip the layout pass
         useGUILayout = false;
@@ -180,7 +183,7 @@ public class NetBehaviour : MonoBehaviour
     {
         try
         {
-            var free = !InPersonalScene && !_teleports.Busy && !_maps.Busy && GodConstant.Instance?.scene_currentType == GodConstant.Scene_currentType.FREEROAM;
+            var free = !InPersonalScene && !_teleports.Busy && !_maps.Busy && _maps.Current == null && GodConstant.Instance?.scene_currentType == GodConstant.Scene_currentType.FREEROAM;
             _crash.FixedTick(_car, free);
             if (!InPersonalScene)
                 _hits.FixedTick(_car, _remotes.Values, r => _parking.Inside && _parking.TryGetSpace(r.Id, out _));
@@ -202,6 +205,14 @@ public class NetBehaviour : MonoBehaviour
         try
         {
             Tick();
+        }
+        catch (Exception e)
+        {
+            Log.LogError(e);
+        }
+        try
+        {
+            EscGuard.Tick(!(_menu?.IsOpen == true || _chat?.IsTyping == true));
         }
         catch (Exception e)
         {
@@ -291,11 +302,18 @@ public class NetBehaviour : MonoBehaviour
             _liveries.Tick(_remotes.Values, personal);
         _cards.Tick(_parking, _remotes.Values);
         _lobby.Tick(_car);
+        _tv.Tick();
         _teleports.Tick(_car);
         _maps.Tick(_car);
         _call.Tick(_parking, _scene, _myId, _remotes.Values, _menu.IsOpen || _chat.IsTyping);
         _hideUi.Tick(_menu.IsOpen || _chat.IsTyping);
         _chat.Muted = _hideUi.Hidden;
+        _doors.Tick(_car, _menu.IsOpen || _chat.IsTyping || personal || _race.Racing, _remotes.Values);
+        if (_welcomed && _doors.Open != _sentDoors)
+        {
+            _sentDoors = _doors.Open;
+            SendBlob(BlobKind.Hinges, new[] { _sentDoors });
+        }
         _traffic.Tick();
     }
 
@@ -338,6 +356,7 @@ public class NetBehaviour : MonoBehaviour
     {
         RemovePlaceholder(remote);
         _cars.Forget(remote);
+        _doors.Forget(remote);
         _walkers.Forget(remote);
         _hits.Forget(remote.Id);
     }
@@ -516,10 +535,19 @@ public class NetBehaviour : MonoBehaviour
         if (god == null || remote.Paint == null || remote.Car == null)
             return;
         var car = remote.Controller != null ? remote.Controller.carLocal : null;
-        if (car == null || CarPaint.Read(car).SequenceEqual(remote.Paint))
+        if (car == null)
             return;
+        var now = CarPaint.Read(car);
+        if (remote.PaintedCar == remote.Car && ReferenceEquals(remote.PaintedFrom, remote.Paint) && remote.PaintedRead != null
+            && now.SequenceEqual(remote.PaintedRead))
+            return;
+        var again = remote.PaintedCar == remote.Car && ReferenceEquals(remote.PaintedFrom, remote.Paint);
         CarPaint.Apply(god, car, remote.Paint);
-        Log.LogInfo($"Painted {remote.Name}'s car {car.carPaint?.main_colour}");
+        remote.PaintedCar = remote.Car;
+        remote.PaintedFrom = remote.Paint;
+        remote.PaintedRead = CarPaint.Read(car);
+        remote.LiveryCar = null;
+        Log.LogInfo($"Painted {remote.Name}'s car {car.carPaint?.main_colour}{(again ? ", the game had changed it" : "")}{(remote.PaintedRead.SequenceEqual(remote.Paint) ? "" : ", reads back different")}");
     }
 
     private void SendChat(string text)
@@ -609,6 +637,15 @@ public class NetBehaviour : MonoBehaviour
         _writer.Put((byte)MsgType.SetAvatar);
         _writer.Put(_myPng);
         _peer.Send(_writer, DeliveryMethod.ReliableOrdered);
+    }
+
+    private void AskStatus()
+    {
+        if (string.IsNullOrEmpty(Host))
+            return;
+        var w = new NetDataWriter();
+        ServerStatus.WriteAsk(w);
+        _net.SendUnconnectedMessage(w, Host, Port);
     }
 
     private void Connect()
@@ -783,7 +820,6 @@ public class NetBehaviour : MonoBehaviour
         }
         if (_menu != null)
         {
-            _menu.AtDealer = _welcomed && _car != null && _dealer.IsNear(_car.transform.position);
             _menu.Ping = _peer != null ? _peer.Ping : -1;
         }
     }
@@ -889,11 +925,14 @@ public class NetBehaviour : MonoBehaviour
     {
         try
         {
-            if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Escape)
+            EscGuard.OnEvent(Event.current);
+            if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Escape
+                && _menu?.IsOpen != true && _chat?.IsTyping != true && !EscGuard.Holding)
                 _race?.OnEscape();
             if (Event.current.type == EventType.KeyDown)
                 _hideUi?.OnKey(Event.current.keyCode, _menu?.IsOpen == true || _chat?.IsTyping == true);
-            _lobby?.DrawMenu();
+            if (Event.current.type == EventType.KeyDown)
+                _doors?.OnKey(Event.current);
             _chat?.Draw(_welcomed, _menu?.IsOpen == true);
             _menu?.Draw(_welcomed, _chat?.IsTyping == true, _myName, _myAvatar, _myHasPicture, _remotes.Values, _car);
 
@@ -1023,6 +1062,7 @@ public class NetBehaviour : MonoBehaviour
             _owner._sentBuild = null;
             _owner._sentStats = null;
             _owner._sentMap = null;
+            _owner._sentDoors = 0;
             _owner._buildDue = true;
             _owner.ClearRemotes();
         }
@@ -1192,6 +1232,8 @@ public class NetBehaviour : MonoBehaviour
                 remote.Stats = PlayerStats.Parse(blob);
             else if (kind == BlobKind.Map)
                 remote.ReadMap(blob);
+            else if (kind == BlobKind.Hinges)
+                remote.Hinges = blob.Length > 0 ? blob[0] : (byte)0;
         }
 
         // the same car sent again changes nothing, it only gets rebuilt when the owner actually changed it
@@ -1228,7 +1270,11 @@ public class NetBehaviour : MonoBehaviour
         public void OnNetworkError(System.Net.IPEndPoint endPoint, System.Net.Sockets.SocketError socketError) =>
             Log.LogWarning($"Network error: {socketError}");
 
-        public void OnNetworkReceiveUnconnected(System.Net.IPEndPoint remoteEndPoint, NetPacketReader reader, UnconnectedMessageType messageType) { }
+        public void OnNetworkReceiveUnconnected(System.Net.IPEndPoint remoteEndPoint, NetPacketReader reader, UnconnectedMessageType messageType)
+        {
+            if (remoteEndPoint.Port == Port && ServerStatus.TryReadReply(reader.RawData, reader.UserDataOffset, reader.UserDataSize, out var online, out var max))
+                _owner._tv.Heard(online, max);
+        }
 
         public void OnNetworkLatencyUpdate(NetPeer peer, int latency) { }
 

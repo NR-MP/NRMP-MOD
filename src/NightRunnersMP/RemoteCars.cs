@@ -18,6 +18,9 @@ internal sealed class Remote
     public RCC_CarControllerV3 Controller;
     public int SpawnedModel;
     public byte[] Paint;
+    public byte[] PaintedFrom;
+    public byte[] PaintedRead;
+    public GameObject PaintedCar;
     public byte[] Build;
     public byte[] BuildOn;
     public PlayerStats Stats;
@@ -44,6 +47,7 @@ internal sealed class Remote
     public int Fitted;
     public int Rebuilds;
     public float RebuiltAt;
+    public byte Hinges;
     public string WheelsSeen;
     public System.Action<GameObject> Built;
     public string MapId = "";

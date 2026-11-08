@@ -29,6 +29,12 @@ internal sealed class CrashGuard
         _notice = notice;
     }
 
+    public void Reset()
+    {
+        _safe = _older = null;
+        _underSince = 0;
+    }
+
     // every physics step
     public void FixedTick(RCC_CarControllerV3 car, bool free)
     {

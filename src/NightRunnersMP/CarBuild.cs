@@ -625,19 +625,20 @@ internal sealed class RemoteBuilds
     // new parts bring colliders and sounds, a ghost can't have those
     private void Finish(CarLocalCustom car)
     {
+        ApplyStance(car);
         try
         {
-            if (_job.Stance != null)
-                CarApplicator.TryApplyStance(car, _job.Stance, new CarApplyResult());
             car.car_updateNeonColor(true, _job.NeonExterior, _job.NeonInterior);
         }
         catch (Exception e)
         {
-            _log.LogWarning($"{_remote.Name}: stance or neon failed: {e.Message}");
+            _log.LogWarning($"{_remote.Name}: neon failed: {e.Message}");
         }
+        HideRemovedParts(car);
         RemoteCars.MakeGhost(_car);
         HideMergedWheels();
         _remote.NextRest = 0f;
+        _remote.PaintedCar = null;
         _remote.Fitted = Whole(_car);
         _remote.WheelsSeen = null;
         _log.LogInfo($"Fitted {_fitted} parts to {_remote.Name}'s car, {_skipped} skipped, {_remote.Fitted} meshes, {Broken(_car)} broken");
@@ -652,6 +653,64 @@ internal sealed class RemoteBuilds
             _remote.BuildOn = null;
         }
         _remote = null;
+    }
+
+    private void ApplyStance(CarLocalCustom car)
+    {
+        if (_job.Stance == null)
+            return;
+        try
+        {
+            CarApplicator.TryApplyStance(car, _job.Stance, new CarApplyResult());
+        }
+        catch (Exception e)
+        {
+            _log.LogWarning($"{_remote.Name}: stance failed: {e.Message}");
+            return;
+        }
+        var fit = _job.Stance.Suspension;
+        var front = fit != null && fit.front_TireProfileIndex >= 0;
+        var rear = fit != null && fit.rear_TireProfileIndex >= 0;
+        if (!front && !rear)
+            return;
+        try
+        {
+            WheelRimFitment.ApplyRimVisuals(car, front, rear);
+            _log.LogInfo($"{_remote.Name}: tire profile {fit.front_TireProfileIndex}/{fit.rear_TireProfileIndex}, sidewall {fit.front_TireSidewallType}/{fit.rear_TireSidewallType}");
+        }
+        catch (Exception e)
+        {
+            _log.LogWarning($"{_remote.Name}: tire profile failed: {e.Message}");
+        }
+    }
+
+    private static readonly CarPart.PartType[] Removable =
+    {
+        CarPart.PartType.ext_front_bumper, CarPart.PartType.ext_rear_bumper, CarPart.PartType.ext_sideskirt,
+        CarPart.PartType.ext_hood, CarPart.PartType.ext_mirrors, CarPart.PartType.ext_spoiler,
+    };
+
+    private void HideRemovedParts(CarLocalCustom car)
+    {
+        if (_job.Parts.Any(p => p.PartType == CarPart.PartType.ext_fullBodykit))
+            return;
+        foreach (var type in Removable)
+        {
+            if (_job.Parts.Any(p => p.PartType == type))
+                continue;
+            try
+            {
+                var part = CarApplicator.FindInstalledCarPartPublic(car, type);
+                if (part == null || !part.gameObject.activeSelf)
+                    continue;
+                part.gameObject.SetActive(false);
+                _log.LogInfo($"{_remote.Name} removed their {type}, hid it");
+            }
+            catch (Exception e)
+            {
+                _log.LogWarning($"{_remote.Name}: hiding {type} failed: {e.Message}");
+            }
+        }
     }
 
     // the spawn merges the stock wheel into one mesh on the hub and it keeps drawing around the fitted rim. a hub with no rim on it keeps its mesh

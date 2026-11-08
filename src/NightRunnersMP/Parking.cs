@@ -44,7 +44,7 @@ internal sealed class Parking
             return "Not in a PA";
         _spot.meetSpot_leave();
         GodConstant.Instance.floatingPoint_drivingScene.LeaveMeetspot();
-        _log.LogInfo("Left the PA");
+        _log.LogInfo("Left the PA from a menu");
         return "Leaving";
     }
 

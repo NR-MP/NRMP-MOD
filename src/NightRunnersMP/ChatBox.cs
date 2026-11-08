@@ -109,6 +109,8 @@ internal sealed class ChatBox
             return;
         }
         var e = Event.current;
+        if (IsTyping && _skipLetter && e.type == EventType.KeyUp && e.keyCode == TypeKey)
+            _skipLetter = false;
         if (IsTyping && e.type == EventType.KeyDown)
         {
             HandleKey(e);
@@ -190,11 +192,12 @@ internal sealed class ChatBox
 
     private void HandleKey(Event e)
     {
-        // the key that opened the box comes through again as a letter
-        var skip = _skipLetter;
-        _skipLetter = false;
-        if (skip && e.keyCode == KeyCode.None && char.ToUpperInvariant(e.character) == 'T')
-            return;
+        if (_skipLetter)
+        {
+            if (e.keyCode == KeyCode.None || e.keyCode == TypeKey)
+                return;
+            _skipLetter = false;
+        }
 
         switch (e.keyCode)
         {
@@ -205,6 +208,7 @@ internal sealed class ChatBox
                 SetTyping(false);
                 break;
             case KeyCode.Escape:
+                EscGuard.Hold();
                 SetTyping(false);
                 break;
             case KeyCode.PageUp:
@@ -227,9 +231,11 @@ internal sealed class ChatBox
     private void SetTyping(bool typing)
     {
         IsTyping = typing;
+        if (!typing)
+            _skipLetter = false;
         _draft = "";
         _scroll = 0;
-        if (ReInput.isReady)
+        if (ReInput.isReady && (typing || !EscGuard.Holding))
             ReInput.controllers.Keyboard.enabled = !typing;
     }
 

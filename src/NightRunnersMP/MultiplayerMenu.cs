@@ -56,8 +56,6 @@ internal sealed class MultiplayerMenu
 
     public bool IsOpen => _open;
 
-    public bool AtDealer { get; set; }
-
     public int Ping { get; set; } = -1;
 
     public MultiplayerMenu(ManualLogSource log, CarPicker picker, CrewState crews, PlayerRace race, Teleports teleports, Maps maps, Teleports.Locate locate, Action applyCollisions, Traffic traffic)
@@ -85,7 +83,7 @@ internal sealed class MultiplayerMenu
         if (e.type == EventType.KeyDown && e.keyCode == ToggleKey && !blocked)
         {
             if (!_open)
-                Open(AtDealer ? Page.Cars : Page.Home);
+                Open(Page.Home);
             SetOpen(!_open);
             e.Use();
             return;
@@ -94,8 +92,6 @@ internal sealed class MultiplayerMenu
         _ui.Prepare();
         if (!_open)
         {
-            if (AtDealer && !blocked)
-                GUI.Label(new Rect(0, Screen.height - 120, Screen.width, 32), $"CAR DEALER: PRESS {ToggleKey}", _ui.Prompt);
             return;
         }
 
@@ -308,6 +304,12 @@ internal sealed class MultiplayerMenu
 
     private void BackToHaruna()
     {
+        if (_maps.Current is { Port: false })
+        {
+            _maps.Leave();
+            SetOpen(false);
+            return;
+        }
         var pa = _teleports.FirstPa();
         if (pa == null)
             return;
@@ -370,6 +372,11 @@ internal sealed class MultiplayerMenu
         if (place.Run != null)
         {
             place.Run();
+            return;
+        }
+        if (!place.Direct && _maps.Current is { Port: false })
+        {
+            _maps.Leave(place);
             return;
         }
         if (!place.Direct)
@@ -558,7 +565,6 @@ internal sealed class MultiplayerMenu
         }, canSelect: false);
     }
 
-    // from the dealer or the main menu
     public void OpenCars()
     {
         Open(Page.Cars);
@@ -586,7 +592,10 @@ internal sealed class MultiplayerMenu
     private void HandleKey(Event e)
     {
         if (e.keyCode == KeyCode.Escape)
+        {
+            EscGuard.Hold();
             SetOpen(false);
+        }
         else if (_page == Page.Crew && _crews.Mine == null && Type(e, ref _crewDraft, Protocol.MaxCrewLength))
             CreateCrew();
     }
@@ -631,7 +640,8 @@ internal sealed class MultiplayerMenu
         }
         if (!ReInput.isReady)
             return;
-        ReInput.controllers.Keyboard.enabled = !open;
+        if (open || !EscGuard.Holding)
+            ReInput.controllers.Keyboard.enabled = !open;
         ReInput.controllers.Mouse.enabled = !open;
     }
 }

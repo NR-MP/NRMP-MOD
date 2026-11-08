@@ -92,6 +92,7 @@ public enum BlobKind : byte
     Map = 3,
     // a car hit for one player, everyone gets it and only they use it
     Hit = 4,
+    Hinges = 5,
 }
 
 public enum RejectReason : byte

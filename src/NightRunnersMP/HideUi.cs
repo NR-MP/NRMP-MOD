@@ -23,7 +23,10 @@ internal sealed class HideUi
     public void Tick(bool blocked)
     {
         if (!_checked && ReInput.isReady)
-            CheckGameKey();
+        {
+            _checked = true;
+            WarnIfGameUses(_log, Key);
+        }
         if (Hidden && blocked)
             Show();
         // the game opens new hud bits as you drive, catch those too
@@ -70,24 +73,23 @@ internal sealed class HideUi
     }
 
     // the game reads keys through Rewired, say so in the log if it has U for something too
-    private void CheckGameKey()
+    public static void WarnIfGameUses(ManualLogSource log, KeyCode key)
     {
-        _checked = true;
         try
         {
             for (var i = 0; i < ReInput.players.playerCount; i++)
             foreach (var map in List(ReInput.players.GetPlayer(i).controllers.maps.GetMaps(ControllerType.Keyboard, 0)))
             foreach (var element in List(map.AllMaps))
             {
-                if (element.keyCode != Key)
+                if (element.keyCode != key)
                     continue;
                 var action = ReInput.mapping.GetAction(element.actionId);
-                _log.LogWarning($"U is also the game's {action?.name ?? element.actionId.ToString()} key");
+                log.LogWarning($"{key} is also the game's {action?.name ?? element.actionId.ToString()} key");
             }
         }
         catch (System.Exception e)
         {
-            _log.LogWarning($"Couldn't read the game's keys: {e.Message}");
+            log.LogWarning($"Couldn't read the game's keys: {e.Message}");
         }
     }
 

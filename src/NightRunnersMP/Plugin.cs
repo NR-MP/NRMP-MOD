@@ -1,5 +1,6 @@
 using BepInEx;
 using BepInEx.Unity.IL2CPP;
+using HarmonyLib;
 using NightRunnersMP.Shared;
 
 namespace NightRunnersMP;
@@ -32,6 +33,11 @@ public class Plugin : BasePlugin
 
         NetBehaviour.SpawnStop = Config.Bind("Player", "SpawnStop", GodConstant.MeetSpots_All.MH_IKAHO_PA,
             "Parking stop to start at when choosing Multiplayer.").Value;
+
+        var harmony = new Harmony(Guid);
+        Loading.Install(harmony);
+        OriginGuard.Install(harmony);
+        ResetGuard.Install(harmony, Log);
 
         AddComponent<NetBehaviour>();
         Log.LogInfo($"{Name} {Version} loaded, server {NetBehaviour.Host}:{NetBehaviour.Port}");
