@@ -583,6 +583,7 @@ internal sealed class RemoteBuilds
                 parent.extFrontCustom = _frontRoot;
                 parent.whlCustom = _wheelRoot;
             }
+            PrepareTire(car, part);
             var result = new CarApplyResult();
             if (CarApplicator.TryApplyPart(car, part, result))
             {
@@ -608,6 +609,43 @@ internal sealed class RemoteBuilds
             }
         }
         _skipped++;
+    }
+
+    private void PrepareTire(CarLocalCustom car, PartRef part)
+    {
+        var fit = _job.Stance?.Suspension;
+        var own = fit != null ? car.wheelSuspension : null;
+        if (own == null)
+            return;
+        if (part.PartType == CarPart.PartType.whl_tireFront && fit.front_TireProfileIndex >= 0)
+        {
+            own.front_TireSidewallType = fit.front_TireSidewallType;
+            own.front_TireProfileIndex = fit.front_TireProfileIndex;
+            own.front_TireMeshIndex = fit.front_TireMeshIndex;
+        }
+        else if (part.PartType == CarPart.PartType.whl_tireRear && fit.rear_TireProfileIndex >= 0)
+        {
+            own.rear_TireSidewallType = fit.rear_TireSidewallType;
+            own.rear_TireProfileIndex = fit.rear_TireProfileIndex;
+            own.rear_TireMeshIndex = fit.rear_TireMeshIndex;
+        }
+    }
+
+    private void KeepTiresDrawn(CarLocalCustom car)
+    {
+        var shown = 0;
+        foreach (var part in car.GetComponentsInChildren<CarPart>(false))
+        {
+            if (part.partType != CarPart.PartType.whl_tireFront && part.partType != CarPart.PartType.whl_tireRear)
+                continue;
+            var meshes = part.GetComponentsInChildren<MeshRenderer>(true);
+            if (meshes.Length == 0 || meshes.Any(m => m.gameObject.activeInHierarchy))
+                continue;
+            meshes[0].gameObject.SetActive(true);
+            shown++;
+        }
+        if (shown > 0)
+            _log.LogWarning($"{_remote.Name}: {shown} tires had no profile mesh left, showing the stock one");
     }
 
     private void FitSubParts(CarLocalCustom car, SubPartState sub)
@@ -676,6 +714,7 @@ internal sealed class RemoteBuilds
         try
         {
             WheelRimFitment.ApplyRimVisuals(car, front, rear);
+            KeepTiresDrawn(car);
             _log.LogInfo($"{_remote.Name}: tire profile {fit.front_TireProfileIndex}/{fit.rear_TireProfileIndex}, sidewall {fit.front_TireSidewallType}/{fit.rear_TireSidewallType}");
         }
         catch (Exception e)
