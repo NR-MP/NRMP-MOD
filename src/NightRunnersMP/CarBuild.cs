@@ -720,6 +720,7 @@ internal sealed class RemoteBuilds
         if (controller == null)
             return;
         var hidden = 0;
+        var shown = 0;
         foreach (var wheel in new[] { controller.FrontLeftWheelCollider, controller.FrontRightWheelCollider, controller.RearLeftWheelCollider, controller.RearRightWheelCollider })
         {
             var model = wheel != null ? wheel.wheelModel : null;
@@ -732,9 +733,30 @@ internal sealed class RemoteBuilds
                     continue;
                 merged.enabled = false;
                 hidden++;
+                shown += ShowTires(hub);
             }
         }
-        _log.LogInfo($"Hid {hidden} merged wheels on {_remote.Name}'s car");
+        _log.LogInfo($"Hid {hidden} merged wheels on {_remote.Name}'s car, {shown} tires back on");
+    }
+
+    // the merge switches the stock tire off and a stock tire fit keeps that same object, so with the hub hidden there's no rubber
+    private static int ShowTires(CarMeshCombine hub)
+    {
+        var shown = 0;
+        foreach (var part in hub.GetComponentsInChildren<CarPart>(false))
+        {
+            if (part.partType != CarPart.PartType.whl_tireFront && part.partType != CarPart.PartType.whl_tireRear)
+                continue;
+            foreach (var mesh in part.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                if (mesh.gameObject.activeInHierarchy)
+                    continue;
+                for (var at = mesh.transform; at != null && at != part.transform; at = at.parent)
+                    at.gameObject.SetActive(true);
+                shown++;
+            }
+        }
+        return shown;
     }
 
     private static bool HasRim(CarMeshCombine hub)
