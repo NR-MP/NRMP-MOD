@@ -82,6 +82,8 @@ internal sealed class Maps
     private readonly List<string> _sceneNames = new();
     private readonly List<Scene> _scenes = new();
     private readonly List<AsyncOperation> _drops = new();
+    private readonly List<AssetBundleCreateRequest> _strayBundles = new();
+    private readonly List<(AsyncOperation Op, string Name)> _strayScenes = new();
 
     private Stage _stage;
     private CustomMap _target;
@@ -279,6 +281,7 @@ internal sealed class Maps
         FollowPort();
         GoPortLater();
         _guard.Tick(car);
+        DropBundles();
         if (_probeAt > 0 && Time.unscaledTime >= _probeAt)
         {
             _probeAt = 0;
@@ -717,6 +720,10 @@ internal sealed class Maps
         _log.LogError($"Map travel stopped: {reason}");
         _portNext = null;
         _notice(reason);
+        if (_opening != null)
+            _strayBundles.Add(_opening);
+        if (_load != null && !_load.isDone && _next > 0)
+            _strayScenes.Add((_load, _sceneNames[_next - 1]));
         _opening = null;
         _load = null;
         _probeAt = 0;
@@ -902,6 +909,39 @@ internal sealed class Maps
             });
         }
         return places;
+    }
+
+    // unity won't open a second bundle with the same name, and a map update needs its new bundle read, so they go with the scenes
+    private void DropBundles()
+    {
+        for (var i = _strayScenes.Count - 1; i >= 0; i--)
+        {
+            var (op, name) = _strayScenes[i];
+            if (op != null && !op.isDone)
+                continue;
+            _strayScenes.RemoveAt(i);
+            var scene = Newest(name);
+            if (scene.IsValid() && scene.isLoaded && !_scenes.Any(s => s == scene))
+                _drops.Add(SceneManager.UnloadSceneAsync(scene));
+        }
+        if (_stage is Stage.Bundles or Stage.Scenes || _scenes.Count > 0 || _strayScenes.Count > 0 || Pending())
+            return;
+        for (var i = _strayBundles.Count - 1; i >= 0; i--)
+        {
+            var op = _strayBundles[i];
+            if (op != null && !op.isDone)
+                continue;
+            _strayBundles.RemoveAt(i);
+            if (op?.assetBundle != null)
+                op.assetBundle.Unload(true);
+        }
+        if (_bundles.Count == 0)
+            return;
+        foreach (var bundle in _bundles.Values)
+            if (bundle != null)
+                bundle.Unload(true);
+        _log.LogInfo($"Map travel: {_bundles.Count} bundles unloaded");
+        _bundles.Clear();
     }
 
     private void DropScenes()

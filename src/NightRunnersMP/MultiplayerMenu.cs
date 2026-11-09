@@ -53,6 +53,17 @@ internal sealed class MultiplayerMenu
     private string _crewDraft = "";
     private bool _storage;
     private int _sure = -1;
+    // OnGUI runs once per event, the lists only get built once a frame
+    private int _builtFrame = -1;
+    private bool _fresh;
+    private readonly List<(string Title, string Subtitle, string Hash, CustomMap Map, int Count)> _rooms = new();
+    private readonly List<Teleports.Place> _here = new();
+    private readonly List<Teleports.Place> _teleportRows = new();
+    private readonly List<CrewInfo> _others = new();
+    private readonly List<Remote> _loose = new();
+    private readonly List<(string Name, Texture2D Picture, bool Has)> _players = new();
+    private readonly HashSet<car_carOrigin.ModelType> _owned = new();
+    private List<CarPicker.Stored> _stored = new();
 
     public bool IsOpen => _open;
 
@@ -105,6 +116,8 @@ internal sealed class MultiplayerMenu
         GUI.matrix = Matrix4x4.TRS(
             new Vector3((Screen.width - MenuUi.DesignWidth * scale) / 2, (Screen.height - MenuUi.DesignHeight * scale) / 2, 0),
             Quaternion.identity, new Vector3(scale, scale, 1));
+        _fresh = _builtFrame != Time.frameCount;
+        _builtFrame = Time.frameCount;
         try
         {
             ReadCar(car);
@@ -267,16 +280,24 @@ internal sealed class MultiplayerMenu
     private void DrawRooms(ICollection<Remote> remotes)
     {
         var here = _maps.Current?.Hash ?? "";
-        var rooms = new List<(string Title, string Subtitle, string Hash, CustomMap Map)>
+        var rooms = _rooms;
+        if (_fresh)
         {
-            ("NIGHT-RUNNERS MULTIPLAYER", "Mount Haruna  ·  PA hub  ·  Free drive", "", null),
-        };
-        rooms.AddRange(_maps.Installed.Select(m => (m.Name.ToUpperInvariant(), m.Author.Length > 0 ? $"Custom map by {m.Author}" : "Custom map", m.Hash, m)));
-        foreach (var group in remotes.Where(r => rooms.All(room => room.Hash != r.MapHash)).GroupBy(r => r.MapHash))
-        {
-            var first = group.First();
-            var otherVersion = _maps.Installed.Any(m => m.Id == first.MapId);
-            rooms.Add((first.MapName.ToUpperInvariant(), otherVersion ? "OTHER VERSION, you need the same files" : "NOT INSTALLED", group.Key, null));
+            rooms.Clear();
+            rooms.Add(("NIGHT-RUNNERS MULTIPLAYER", "Mount Haruna  ·  PA hub  ·  Free drive", "", null, 0));
+            rooms.AddRange(_maps.Installed.Select(m => (m.Name.ToUpperInvariant(), m.Author.Length > 0 ? $"Custom map by {m.Author}" : "Custom map", m.Hash, m, 0)));
+            foreach (var group in remotes.Where(r => rooms.All(room => room.Hash != r.MapHash)).GroupBy(r => r.MapHash))
+            {
+                var first = group.First();
+                var otherVersion = _maps.Installed.Any(m => m.Id == first.MapId);
+                rooms.Add((first.MapName.ToUpperInvariant(), otherVersion ? "OTHER VERSION, you need the same files" : "NOT INSTALLED", group.Key, null, 0));
+            }
+            for (var i = 0; i < rooms.Count; i++)
+            {
+                var room = rooms[i];
+                room.Count = remotes.Count(r => r.MapHash == room.Hash) + (here == room.Hash ? 1 : 0);
+                rooms[i] = room;
+            }
         }
 
         if (_selected < rooms.Count && !_race.Busy && !_maps.Busy && !_teleports.Busy && rooms[_selected].Hash != here)
@@ -290,9 +311,8 @@ internal sealed class MultiplayerMenu
         DrawList(MenuUi.List, rooms.Count, (rect, i) =>
         {
             var room = rooms[i];
-            var count = remotes.Count(r => r.MapHash == room.Hash) + (here == room.Hash ? 1 : 0);
             _ui.RowNumber(rect, i + 1);
-            _ui.RowText(rect, room.Title, here == room.Hash ? $"{room.Subtitle}  ·  YOU ARE HERE" : room.Subtitle, $"{count:00}/{Protocol.MaxPlayers}");
+            _ui.RowText(rect, room.Title, here == room.Hash ? $"{room.Subtitle}  ·  YOU ARE HERE" : room.Subtitle, $"{room.Count:00}/{Protocol.MaxPlayers}");
         });
     }
 
@@ -320,22 +340,30 @@ internal sealed class MultiplayerMenu
 
     private List<Teleports.Place> PlayersHere(ICollection<Remote> remotes)
     {
+        if (!_fresh)
+            return _here;
         var map = _maps.Current?.Hash ?? "";
         var road = SceneId.FromName(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
-        return remotes.Where(r => !r.IsBot && r.Interp.HasData && r.MapHash == map)
-            .Select(r => _teleports.ToPlayer(r, _locate, map.Length == 0 && r.Interp.Scene != road, map.Length > 0))
-            .ToList();
+        _here.Clear();
+        _here.AddRange(remotes.Where(r => !r.IsBot && r.Interp.HasData && r.MapHash == map)
+            .Select(r => _teleports.ToPlayer(r, _locate, map.Length == 0 && r.Interp.Scene != road, map.Length > 0)));
+        return _here;
     }
 
     // players get their own page, 32 of them would push every place off this one
     private void DrawTeleport(ICollection<Remote> remotes)
     {
-        var rows = new List<Teleports.Place> { new() { Name = "Players", Kind = $"{PlayersHere(remotes).Count:00} HERE" } };
-        // way out for when the game won't give you the get in prompt
-        var god = GodConstant.Instance;
-        if (god != null && god.scene_currentType == GodConstant.Scene_currentType.MEETSPOT)
-            rows.Add(new() { Name = "Leave PA", Kind = "EXIT", Run = () => _teleports.LeavePa() });
-        rows.AddRange(_places);
+        var rows = _teleportRows;
+        if (_fresh)
+        {
+            rows.Clear();
+            rows.Add(new() { Name = "Players", Kind = $"{PlayersHere(remotes).Count:00} HERE" });
+            // way out for when the game won't give you the get in prompt
+            var god = GodConstant.Instance;
+            if (god != null && god.scene_currentType == GodConstant.Scene_currentType.MEETSPOT)
+                rows.Add(new() { Name = "Leave PA", Kind = "EXIT", Run = () => _teleports.LeavePa() });
+            rows.AddRange(_places);
+        }
         DrawPlaces(rows, 1);
     }
 
@@ -448,7 +476,12 @@ internal sealed class MultiplayerMenu
             _primaryAction = CreateCrew;
 
         var invites = _crews.Invites;
-        var others = _crews.All.Where(c => !invites.Contains(c)).ToList();
+        var others = _others;
+        if (_fresh)
+        {
+            others.Clear();
+            others.AddRange(_crews.All.Where(c => !invites.Contains(c)));
+        }
         GUI.Label(new Rect(area.x, area.y + 52, area.width, 26), invites.Count > 0 ? "INVITES AND CREWS" : "CREWS", _ui.Small);
         DrawList(new Rect(area.x, area.y + 80, area.width, area.height - 80), invites.Count + others.Count, (rect, i) =>
         {
@@ -472,7 +505,13 @@ internal sealed class MultiplayerMenu
         GUI.Label(new Rect(area.x, area.y, area.width, 26), $"LED BY {crew.Members[0].Name}", _ui.Small);
 
         // leader sees who to invite after the members
-        var loose = _crews.IsLeader ? remotes.Where(r => !r.IsBot && r.Crew.Length == 0).ToList() : new List<Remote>();
+        var loose = _loose;
+        if (_fresh)
+        {
+            loose.Clear();
+            if (_crews.IsLeader)
+                loose.AddRange(remotes.Where(r => !r.IsBot && r.Crew.Length == 0));
+        }
         DrawList(new Rect(area.x, area.y + 30, area.width, area.height - 30), crew.Members.Count + loose.Count, (rect, i) =>
         {
             if (i >= crew.Members.Count)
@@ -500,8 +539,13 @@ internal sealed class MultiplayerMenu
 
     private void DrawPlayers(string myName, Texture2D picture, bool hasPicture, ICollection<Remote> remotes)
     {
-        var rows = new List<(string Name, Texture2D Picture, bool Has)> { ($"{PlayerStats.OwnTag(myName)} (YOU)", picture, hasPicture) };
-        rows.AddRange(remotes.Select(r => (r.Tag, r.Avatar, r.HasPicture)));
+        var rows = _players;
+        if (_fresh)
+        {
+            rows.Clear();
+            rows.Add(($"{PlayerStats.OwnTag(myName)} (YOU)", picture, hasPicture));
+            rows.AddRange(remotes.Select(r => (r.Tag, r.Avatar, r.HasPicture)));
+        }
         DrawList(MenuUi.List, rows.Count, (rect, i) =>
         {
             var (name, rowPicture, has) = rows[i];
@@ -521,6 +565,7 @@ internal sealed class MultiplayerMenu
             _sure = -1;
             _selected = 0;
             _listPage = 0;
+            _fresh = true;
         }
         if (_storage)
         {
@@ -529,6 +574,8 @@ internal sealed class MultiplayerMenu
         }
         if (_ui.Button(new Rect(area.xMax - ButtonWidth, area.y - 2, ButtonWidth, 28), _picker.Auto ? "AUTO" : "MANUAL"))
             _picker.Auto = !_picker.Auto;
+        if (_fresh)
+            _picker.Owned(_owned);
         if (_selected < rows.Count)
         {
             var row = rows[_selected];
@@ -539,14 +586,16 @@ internal sealed class MultiplayerMenu
         DrawList(new Rect(area.x, area.y + 30, area.width, area.height - 30), rows.Count, (rect, i) =>
         {
             _ui.RowNumber(rect, i + 1);
-            _ui.RowText(rect, rows[i].Name, rows[i].Details, _picker.IsOwned(rows[i].Model) ? "OWNED" : null);
+            _ui.RowText(rect, rows[i].Name, rows[i].Details, _owned.Contains(CarKey.Model(rows[i].Model)) ? "OWNED" : null);
         }, i => _picker.Pick(rows[i], car));
     }
 
     // cars in the storage lot, DELETE then SURE? so one click can't lose a car
     private void DrawStorage(Rect area)
     {
-        var stored = _picker.InStorage();
+        if (_fresh)
+            _stored = _picker.InStorage();
+        var stored = _stored;
         DrawList(new Rect(area.x, area.y + 30, area.width, area.height - 30), stored.Count, (rect, i) =>
         {
             _ui.RowNumber(rect, i + 1);
@@ -587,6 +636,7 @@ internal sealed class MultiplayerMenu
         _selected = 0;
         _listPage = 0;
         _pageCount = 1;
+        _builtFrame = -1;
     }
 
     private void HandleKey(Event e)

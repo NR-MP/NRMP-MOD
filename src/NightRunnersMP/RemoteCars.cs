@@ -92,6 +92,7 @@ internal sealed class RemoteCars
 {
     private const float SpawnTimeoutSeconds = 60f;
     private const float RetrySeconds = 3f;
+    private const float FailedSeconds = 120f;
     private const int MaxSpawnTries = 6;
     private const float HalfBuiltRange = 2f;
     private const string HitboxName = "NRMP hitbox";
@@ -102,7 +103,8 @@ internal sealed class RemoteCars
 
     private readonly ManualLogSource _log;
     private readonly Queue<Remote> _queue = new();
-    private readonly HashSet<int> _failedModels = new();
+    // model -> when it gets another try
+    private readonly Dictionary<int, float> _failedModels = new();
     private CarParent _parent;
     private Remote _current;
     private GameObject _spawnPoint;
@@ -124,7 +126,7 @@ internal sealed class RemoteCars
 
     public void Request(Remote remote)
     {
-        if (remote.Model > 0 && !_queue.Contains(remote) && remote != _current)
+        if (remote.Model > 0 && !HasFailed(remote.Model) && !_queue.Contains(remote) && remote != _current)
             _queue.Enqueue(remote);
     }
 
@@ -133,9 +135,15 @@ internal sealed class RemoteCars
         _game.Watch(localCar);
         if (_current != null)
         {
-            Poll(localCar);
-            if (_current == null)
-                _game.OursDone();
+            try
+            {
+                Poll(localCar);
+            }
+            finally
+            {
+                if (_current == null)
+                    _game.OursDone();
+            }
             return;
         }
         if (hold || localCar == null || _queue.Count == 0 || Time.unscaledTime < _retryAt)
@@ -148,7 +156,19 @@ internal sealed class RemoteCars
 
     public bool Busy => _current != null;
 
-    public bool HasFailed(int model) => _failedModels.Contains(model);
+    public bool HasFailed(int model)
+    {
+        if (!_failedModels.TryGetValue(model, out var until))
+            return false;
+        if (Time.unscaledTime < until)
+            return true;
+        _failedModels.Remove(model);
+        return false;
+    }
+
+    public void ClearFailures() => _failedModels.Clear();
+
+    private void Fail(int model) => _failedModels[model] = Time.unscaledTime + FailedSeconds;
 
     public void Forget(Remote remote)
     {
@@ -164,7 +184,7 @@ internal sealed class RemoteCars
 
     private void Begin(Remote remote, Vector3 fallbackSpawn)
     {
-        if (!remote.NeedsSpawn || _failedModels.Contains(remote.Model))
+        if (!remote.NeedsSpawn || HasFailed(remote.Model))
             return;
         _parent = Object.FindObjectOfType<CarParent>();
         if (_parent == null)
@@ -204,7 +224,7 @@ internal sealed class RemoteCars
             if (_parent != null && Time.unscaledTime < _deadline && !SpawnDied)
                 return;
             _log.LogError($"Spawning model {_current.Model} failed, keeping placeholder");
-            _failedModels.Add(_current.Model);
+            Fail(_current.Model);
             RestoreLocalPlayer(localCar);
             RemoveHalfBuilt(localCar);
             _current = null;
@@ -221,19 +241,20 @@ internal sealed class RemoteCars
         result.transform.SetParent(null);
         StartWheels(result);
         MakeGhost(result);
-        if (_current.Built != null)
+        // before the callbacks, a throw in one held the queue for the whole timeout
+        var done = _current;
+        _current = null;
+        if (done.Built != null)
         {
-            _current.Built(result);
-            _current = null;
+            done.Built(result);
             return;
         }
-        _current.Car = result;
-        _current.Controller = result.GetComponent<RCC_CarControllerV3>();
-        _current.SpawnedModel = _wanted;
-        _current.SpawnTries = 0;
-        _log.LogInfo($"Car ready for {_current.Name}");
-        CarReady?.Invoke(_current);
-        _current = null;
+        done.Car = result;
+        done.Controller = result.GetComponent<RCC_CarControllerV3>();
+        done.SpawnedModel = _wanted;
+        done.SpawnTries = 0;
+        _log.LogInfo($"Car ready for {done.Name}");
+        CarReady?.Invoke(done);
     }
 
     // state sits at the last yield while it runs, -1 once it's out. with no result that means it threw
@@ -265,7 +286,7 @@ internal sealed class RemoteCars
         if (++_current.SpawnTries >= MaxSpawnTries)
         {
             _log.LogError($"Giving up on model {_wanted}, keeping placeholder");
-            _failedModels.Add(_wanted);
+            Fail(_wanted);
         }
         _current = null;
         return false;

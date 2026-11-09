@@ -313,7 +313,7 @@ public class NetBehaviour : MonoBehaviour
         if (_welcomed && _doors.Open != _sentDoors)
         {
             _sentDoors = _doors.Open;
-            SendBlob(BlobKind.Hinges, new[] { _sentDoors });
+            SendBlob(BlobKind.Hinges, new[] { (byte)(_sentDoors & CarDoors.All) });
         }
         _traffic.Tick();
     }
@@ -543,7 +543,16 @@ public class NetBehaviour : MonoBehaviour
             && now.SequenceEqual(remote.PaintedRead))
             return;
         var again = remote.PaintedCar == remote.Car && ReferenceEquals(remote.PaintedFrom, remote.Paint);
-        CarPaint.Apply(god, car, remote.Paint);
+        try
+        {
+            CarPaint.Apply(god, car, remote.Paint);
+        }
+        catch (System.Exception e)
+        {
+            Log.LogWarning($"Could not paint {remote.Name}'s car: {e.Message}");
+            remote.Paint = null;
+            return;
+        }
         remote.PaintedCar = remote.Car;
         remote.PaintedFrom = remote.Paint;
         remote.PaintedRead = CarPaint.Read(car);
@@ -725,6 +734,7 @@ public class NetBehaviour : MonoBehaviour
             return;
         _sceneName = scene;
         _scene = SceneId.FromName(scene);
+        _cars?.ClearFailures();
         _buildDue = true;
         Log.LogInfo($"Now playing in {scene}");
     }
@@ -1129,7 +1139,13 @@ public class NetBehaviour : MonoBehaviour
                     break;
                 case MsgType.CarPainted:
                     if (_owner._remotes.TryGetValue(reader.GetByte(), out var painted))
-                        painted.Paint = reader.GetRemainingBytes();
+                    {
+                        var paint = reader.GetRemainingBytes();
+                        if (CarPaint.Valid(paint))
+                            painted.Paint = paint;
+                        else
+                            Log.LogWarning($"Bad paint from {painted.Name}, {paint.Length} bytes");
+                    }
                     break;
                 case MsgType.PlayerBlob:
                     if (_owner._remotes.TryGetValue(reader.GetByte(), out var owner))
@@ -1237,7 +1253,7 @@ public class NetBehaviour : MonoBehaviour
             else if (kind == BlobKind.Map)
                 remote.ReadMap(blob);
             else if (kind == BlobKind.Hinges)
-                remote.Hinges = blob.Length > 0 ? blob[0] : (byte)0;
+                remote.Hinges = blob.Length > 0 ? (byte)(blob[0] & CarDoors.All) : (byte)0;
         }
 
         // the same car sent again changes nothing, it only gets rebuilt when the owner actually changed it

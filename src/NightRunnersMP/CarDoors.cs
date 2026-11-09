@@ -11,7 +11,7 @@ internal sealed class CarDoors
     public const byte Doors = 1;
     public const byte Hood = 2;
     public const byte Trunk = 4;
-    private const byte All = Doors | Hood | Trunk;
+    public const byte All = Doors | Hood | Trunk;
     private const float Speed = 2f;
     private const float ShutBelow = 0.001f;
     private const float MaxShutSeconds = 4f;

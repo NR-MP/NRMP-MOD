@@ -48,6 +48,16 @@ internal sealed class CarPicker
         return false;
     }
 
+    public void Owned(HashSet<car_carOrigin.ModelType> into)
+    {
+        into.Clear();
+        var owned = GodConstant.Instance?.allOwnedCars;
+        if (owned == null)
+            return;
+        foreach (var car in owned)
+            into.Add(car.modelType);
+    }
+
     // AI twins share a model with a player entry, and the starter entry isn't for sale
     public IReadOnlyList<Row> Rows
     {

@@ -44,7 +44,10 @@ internal static class Avatars
             return null;
         var source = new Texture2D(2, 2);
         if (!ImageConversion.LoadImage(source, File.ReadAllBytes(file)))
+        {
+            UnityEngine.Object.Destroy(source);
             return null;
+        }
 
         var side = Math.Min(source.width, source.height);
         var left = (source.width - side) / 2f / source.width;

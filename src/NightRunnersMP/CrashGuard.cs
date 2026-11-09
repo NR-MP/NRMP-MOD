@@ -13,8 +13,11 @@ internal sealed class CrashGuard
     private const float SafeEvery = 0.5f;
     private const float UnderSeconds = 0.5f;
 
+    private static readonly Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<RaycastHit> Hits = new(64);
+
     private readonly ManualLogSource _log;
     private readonly System.Action<string> _notice;
+    private RCC_CarControllerV3 _car;
     private Rigidbody _body;
     private float _underSince;
     private float _safeAt;
@@ -38,13 +41,18 @@ internal sealed class CrashGuard
     // every physics step
     public void FixedTick(RCC_CarControllerV3 car, bool free)
     {
-        var body = car != null ? car.GetComponent<Rigidbody>() : null;
-        if (body != _body)
+        if (car != _car)
         {
-            _body = body;
-            _safe = _older = null;
-            _underSince = 0;
+            _car = car;
+            var found = car != null ? car.GetComponent<Rigidbody>() : null;
+            if (found != _body)
+            {
+                _body = found;
+                _safe = _older = null;
+                _underSince = 0;
+            }
         }
+        var body = _body;
         if (body == null || body.isKinematic)
             return;
 
@@ -124,9 +132,15 @@ internal sealed class CrashGuard
     {
         point = default;
         var best = float.MaxValue;
-        foreach (var hit in Physics.RaycastAll(from, Vector3.down, length, ~0, QueryTriggerInteraction.Ignore))
+        var count = Physics.RaycastNonAlloc(from, Vector3.down, Hits, length, ~0, QueryTriggerInteraction.Ignore);
+        for (var i = 0; i < count; i++)
         {
-            if (hit.distance >= best || hit.rigidbody == own || hit.collider.GetComponentInParent<RCC_CarControllerV3>() != null)
+            var hit = Hits[i];
+            if (hit.distance >= best)
+                continue;
+            // cars all carry a rigidbody, the road doesn't
+            var body = hit.rigidbody;
+            if (body != null && (body == own || body.GetComponent<RCC_CarControllerV3>() != null))
                 continue;
             best = hit.distance;
             point = hit.point;

@@ -16,6 +16,7 @@ internal sealed class LiverySync
 {
     private const float PartSeconds = 0.1f;
     private const float AskSeconds = 5f;
+    private const float PruneSeconds = 10f;
     // real liveries are 2048 or 4096, a small file can still unpack into gigabytes past this
     private const int MaxSide = 4096;
 
@@ -28,6 +29,11 @@ internal sealed class LiverySync
     private readonly Dictionary<string, int> _received = new();
     private readonly Dictionary<string, float> _asked = new();
     private readonly Dictionary<string, Texture2D> _textures = new();
+    private readonly Dictionary<Remote, (GameObject Car, string Main, string Mask)> _worn = new();
+    private readonly HashSet<string> _inUse = new();
+    private readonly List<string> _unused = new();
+    private readonly List<Remote> _gone = new();
+    private float _pruneAt;
     private readonly HashSet<string> _have = new();
     private readonly HashSet<string> _uploaded = new();
     private string _uploading;
@@ -101,20 +107,56 @@ internal sealed class LiverySync
     public void Tick(IEnumerable<Remote> remotes, bool hold)
     {
         Upload();
-        if (hold)
-            return;
-        foreach (var remote in remotes)
+        if (!hold)
         {
-            try
+            foreach (var remote in remotes)
             {
-                Follow(remote);
-            }
-            catch (Exception e)
-            {
-                _log.LogWarning($"Livery of {remote.Name} failed: {e.Message}");
-                remote.LiveryCar = remote.Car;
+                try
+                {
+                    Follow(remote);
+                }
+                catch (Exception e)
+                {
+                    _log.LogWarning($"Livery of {remote.Name} failed: {e.Message}");
+                    remote.LiveryCar = remote.Car;
+                }
             }
         }
+        Prune(remotes);
+    }
+
+    // a car keeps wearing its livery after the build drops it, so a texture stays until that car is gone
+    private void Prune(IEnumerable<Remote> remotes)
+    {
+        if (Time.unscaledTime < _pruneAt)
+            return;
+        _pruneAt = Time.unscaledTime + PruneSeconds;
+        _inUse.Clear();
+        foreach (var remote in remotes)
+        {
+            if (!_worn.TryGetValue(remote, out var worn) || worn.Car == null || worn.Car != remote.Car)
+                continue;
+            _inUse.Add(worn.Main);
+            if (worn.Mask != null)
+                _inUse.Add(worn.Mask);
+        }
+        foreach (var pair in _worn)
+            if (pair.Value.Car == null || pair.Value.Car != pair.Key.Car)
+                _gone.Add(pair.Key);
+        foreach (var remote in _gone)
+            _worn.Remove(remote);
+        _gone.Clear();
+        foreach (var key in _textures.Keys)
+            if (!_inUse.Contains(key))
+                _unused.Add(key);
+        foreach (var key in _unused)
+        {
+            var texture = _textures[key];
+            _textures.Remove(key);
+            if (texture != null)
+                UnityEngine.Object.Destroy(texture);
+        }
+        _unused.Clear();
     }
 
     private void Upload()
@@ -173,7 +215,9 @@ internal sealed class LiverySync
         var main = Load(job.LiveryMain, false);
         if (main == null)
             return;
-        car.SetLiveryDecal(main, job.LiveryFinish, job.LiveryMask != null ? Load(job.LiveryMask, true) : null);
+        var mask = job.LiveryMask != null ? Load(job.LiveryMask, true) : null;
+        car.SetLiveryDecal(main, job.LiveryFinish, mask);
+        _worn[remote] = (remote.Car, Key(job.LiveryMain, false), mask != null ? Key(job.LiveryMask, true) : null);
         _log.LogInfo($"Livery on {remote.Name}'s car");
     }
 
@@ -200,9 +244,11 @@ internal sealed class LiverySync
         return false;
     }
 
+    private static string Key(string hash, bool linear) => linear ? hash + "/linear" : hash;
+
     private Texture2D Load(string hash, bool linear)
     {
-        if (_textures.TryGetValue(hash, out var known) && known != null)
+        if (_textures.TryGetValue(Key(hash, linear), out var known) && known != null)
             return known;
         // checked again here, the folder could have files from before the check existed
         if (!File.Exists(PathOf(hash)))
@@ -216,7 +262,7 @@ internal sealed class LiverySync
         if (texture == null)
             _log.LogWarning($"Livery {hash} won't load: {status}");
         else
-            _textures[hash] = texture;
+            _textures[Key(hash, linear)] = texture;
         return texture;
     }
 

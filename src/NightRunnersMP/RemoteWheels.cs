@@ -26,6 +26,7 @@ internal sealed class WheelVisual
     public bool SmokeMade;
     public bool SmokeOn;
     public float SmokeAge;
+    public int Ground;
 }
 
 // ghosts have their wheel colliders off so the game skips its wheel update. same trick as its replay player: the numbers come off the
@@ -51,6 +52,8 @@ internal sealed class RemoteWheels
     private const float SmokeRateThin = 0.15f;
     private const float SmokeRateGrowth = 0.85f;
     private const float SmokeLifeSeconds = 2f;
+
+    private static readonly Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<RaycastHit> Hits = new(16);
 
     private readonly RemoteBuilds _builds;
 
@@ -121,6 +124,7 @@ internal sealed class RemoteWheels
             Rest = wheel.wheelModel.localRotation,
             Front = front,
             Right = remote.Car.transform.InverseTransformPoint(wheel.transform.position).x > 0f,
+            Ground = GroundLayers(wheel.gameObject.layer),
         };
         // a caliper on the spinning part stays put. only needed when there's no wheelMesh and the whole model spins
         if (visual.Mesh == null && wheel.brakeMesh != null && wheel.brakeMesh.parent == wheel.wheelModel)
@@ -182,13 +186,25 @@ internal sealed class RemoteWheels
         var radius = collider.radius * mount.lossyScale.y;
         var travel = collider.suspensionDistance * mount.lossyScale.y;
         var drop = travel * (1f - collider.suspensionSpring.targetPosition);
-        foreach (var hit in Physics.RaycastAll(top, -up, travel + radius))
+        var count = Physics.RaycastNonAlloc(top, -up, Hits, travel + radius, visual.Ground, QueryTriggerInteraction.Ignore);
+        for (var i = 0; i < count; i++)
         {
-            if (!hit.transform.IsChildOf(visual.Model.root) && hit.distance - radius < drop)
+            var hit = Hits[i];
+            if (hit.distance - radius < drop && !hit.transform.IsChildOf(visual.Model.root))
                 drop = Mathf.Max(0f, hit.distance - radius);
         }
         visual.Drop = visual.Drop < 0f ? drop : Mathf.MoveTowards(visual.Drop, drop, DropPerSecond * Time.deltaTime);
         visual.Model.position = top - up * visual.Drop;
+    }
+
+    // whatever the wheel collider itself would roll on
+    private static int GroundLayers(int wheel)
+    {
+        var mask = 0;
+        for (var layer = 0; layer < 32; layer++)
+            if (!Physics.GetIgnoreLayerCollision(wheel, layer))
+                mask |= 1 << layer;
+        return mask & Physics.DefaultRaycastLayers;
     }
 
     // the game's SkidMarks writes -1 over the wheel's own chain, so the chain lives on my side
@@ -196,7 +212,7 @@ internal sealed class RemoteWheels
     {
         var marks = visual.Marks;
         if (marks == null || slip < MinSkid
-            || !Physics.Raycast(visual.Model.position + Vector3.up * RayLift, Vector3.down, out var hit, RayLength)
+            || !Physics.Raycast(visual.Model.position + Vector3.up * RayLift, Vector3.down, out var hit, RayLength, visual.Ground, QueryTriggerInteraction.Ignore)
             || hit.transform.IsChildOf(visual.Model.root))
         {
             visual.Chain = -1;

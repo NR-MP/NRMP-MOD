@@ -37,6 +37,7 @@ public class Plugin : BasePlugin
         var harmony = new Harmony(Guid);
         Loading.Install(harmony);
         OriginGuard.Install(harmony);
+        RemoteLights.Install(harmony);
         ResetGuard.Install(harmony, Log);
 
         AddComponent<NetBehaviour>();
