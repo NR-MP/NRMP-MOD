@@ -17,6 +17,7 @@ internal sealed class LiverySync
     private const float PartSeconds = 0.1f;
     private const float AskSeconds = 5f;
     private const float PruneSeconds = 10f;
+    private const float UnusedSeconds = 300f;
     // real liveries are 2048 or 4096, a small file can still unpack into gigabytes past this
     private const int MaxSide = 4096;
 
@@ -32,6 +33,7 @@ internal sealed class LiverySync
     private readonly Dictionary<Remote, (GameObject Car, string Main, string Mask)> _worn = new();
     private readonly HashSet<string> _inUse = new();
     private readonly List<string> _unused = new();
+    private readonly Dictionary<string, float> _unusedSince = new();
     private readonly List<Remote> _gone = new();
     private float _pruneAt;
     private readonly HashSet<string> _have = new();
@@ -146,13 +148,21 @@ internal sealed class LiverySync
         foreach (var remote in _gone)
             _worn.Remove(remote);
         _gone.Clear();
+        var now = Time.unscaledTime;
         foreach (var key in _textures.Keys)
-            if (!_inUse.Contains(key))
+        {
+            if (_inUse.Contains(key))
+                _unusedSince.Remove(key);
+            else if (!_unusedSince.TryGetValue(key, out var since))
+                _unusedSince[key] = now;
+            else if (now - since >= UnusedSeconds)
                 _unused.Add(key);
+        }
         foreach (var key in _unused)
         {
             var texture = _textures[key];
             _textures.Remove(key);
+            _unusedSince.Remove(key);
             if (texture != null)
                 UnityEngine.Object.Destroy(texture);
         }
@@ -258,7 +268,9 @@ internal sealed class LiverySync
             _log.LogWarning($"Livery {hash} won't load, {why}");
             return null;
         }
+        var start = SlowStep.Start();
         var texture = LiveryStore.LoadTexture(PathOf(hash), out var status, linear);
+        SlowStep.Stop(start, $"loading livery {hash}");
         if (texture == null)
             _log.LogWarning($"Livery {hash} won't load: {status}");
         else
@@ -306,7 +318,9 @@ internal sealed class LiverySync
             _log.LogWarning($"Livery {hash} thrown away, {why}");
             return;
         }
+        var start = SlowStep.Start();
         var clean = Clean(data);
+        SlowStep.Stop(start, $"cleaning livery {hash}");
         if (clean == null)
         {
             _have.Add(hash);

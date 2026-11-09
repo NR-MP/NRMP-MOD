@@ -112,6 +112,8 @@ internal sealed class RemoteCars
     private float _deadline;
     private float _retryAt;
     private int _wanted;
+    private float _spawnWorst;
+    private int _spawnFrames;
     private readonly List<(GameObject Part, int Layer)> _ownLayers = new();
 
     public System.Action<Remote> CarReady;
@@ -202,6 +204,8 @@ internal sealed class RemoteCars
         _current = remote;
         _wanted = remote.Model;
         _deadline = Time.unscaledTime + SpawnTimeoutSeconds;
+        _spawnWorst = 0f;
+        _spawnFrames = 0;
         _parent.StockCarSpawn_result = null;
         // CarApplicator refuses a body that got merged into one mesh. null_part spawned most of the shell missing, this is the garage's
         // own setup, whole car with the outside left in pieces. the inside stays merged, so interior parts stay stock for now
@@ -219,6 +223,8 @@ internal sealed class RemoteCars
     private void Poll(RCC_CarControllerV3 localCar)
     {
         var result = _parent != null ? _parent.StockCarSpawn_result : null;
+        _spawnFrames++;
+        _spawnWorst = Mathf.Max(_spawnWorst, Time.unscaledDeltaTime);
         if (result == null)
         {
             if (_parent != null && Time.unscaledTime < _deadline && !SpawnDied)
@@ -236,6 +242,7 @@ internal sealed class RemoteCars
         RestoreLocalPlayer(localCar);
         if (!IsWanted(result))
             return;
+        var start = SlowStep.Start();
         Forget(_current);
         // spawner parents it to whatever's around, that can get switched off when a race loads
         result.transform.SetParent(null);
@@ -253,8 +260,9 @@ internal sealed class RemoteCars
         done.Controller = result.GetComponent<RCC_CarControllerV3>();
         done.SpawnedModel = _wanted;
         done.SpawnTries = 0;
-        _log.LogInfo($"Car ready for {done.Name}");
+        _log.LogInfo($"Car ready for {done.Name}, the game took {_spawnFrames} frames, worst {_spawnWorst * 1000f:F0} ms");
         CarReady?.Invoke(done);
+        SlowStep.Stop(start, $"setting up {done.Name}'s car");
     }
 
     // state sits at the last yield while it runs, -1 once it's out. with no result that means it threw
