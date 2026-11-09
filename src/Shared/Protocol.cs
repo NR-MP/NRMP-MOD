@@ -82,6 +82,11 @@ public enum MsgType : byte
     RaceJumped = 37,
     RaceRestage = 38,
     RaceEnded = 39,
+    TrafficHello = 40,
+    TrafficRole = 41,
+    TrafficSpawn = 42,
+    TrafficBatch = 43,
+    TrafficGone = 44,
 }
 
 // stuff everyone should see, late joiners too. server stores and forwards blobs unread, new kind = no server change, no bump
@@ -207,6 +212,11 @@ public struct CarState
     {
         w.Put(TimeMs);
         w.Put(Scene);
+        WritePose(w);
+    }
+
+    public void WritePose(NetDataWriter w)
+    {
         w.Put(Position.X);
         w.Put(Position.Y);
         w.Put(Position.Z);
@@ -221,10 +231,18 @@ public struct CarState
 
     public static CarState Read(NetDataReader r)
     {
+        var timeMs = r.GetUInt();
+        var scene = r.GetUShort();
+        var s = ReadPose(r);
+        s.TimeMs = timeMs;
+        s.Scene = scene;
+        return s;
+    }
+
+    public static CarState ReadPose(NetDataReader r)
+    {
         var s = new CarState
         {
-            TimeMs = r.GetUInt(),
-            Scene = r.GetUShort(),
             Position = new Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat()),
         };
         var rotation = new Quaternion(r.GetShort() / 32767f, r.GetShort() / 32767f, r.GetShort() / 32767f, r.GetShort() / 32767f);

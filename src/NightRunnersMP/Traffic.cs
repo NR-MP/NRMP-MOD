@@ -15,8 +15,21 @@ internal sealed class Traffic
     private readonly ManualLogSource _log;
     private float _checkAt;
     private bool _stopped;
+    private bool _following;
 
     public Traffic(ManualLogSource log) => _log = log;
+
+    public bool Following
+    {
+        get => _following;
+        set
+        {
+            if (_following == value)
+                return;
+            _following = value;
+            _checkAt = 0f;
+        }
+    }
 
     public void Tick()
     {
@@ -26,15 +39,16 @@ internal sealed class Traffic
         var coordinator = TrafficCoordinator.Instance;
         if (coordinator == null)
             return;
-        if (Off.Value && coordinator.IsTrafficEnabled)
+        var off = Off.Value || _following;
+        if (off && coordinator.IsTrafficEnabled)
         {
             coordinator.SetTrafficEnabled(false, true);
             if (!_stopped)
-                _log.LogInfo("Traffic off");
+                _log.LogInfo(_following ? "Traffic off, showing the shared traffic" : "Traffic off");
             _stopped = true;
         }
         // only give it back if we were the ones holding it off, a meetspot keeps its own traffic off
-        else if (!Off.Value && _stopped)
+        else if (!off && _stopped)
         {
             coordinator.SetTrafficEnabled(true, false);
             _stopped = false;
