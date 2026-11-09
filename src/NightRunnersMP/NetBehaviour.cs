@@ -118,6 +118,9 @@ public class NetBehaviour : MonoBehaviour
     private CarDoors _doors;
     private byte _sentDoors;
     private Traffic _traffic;
+    private TrafficSync _shared;
+    private byte _sentTrafficFlags;
+    private readonly List<Num.Vector3> _watchers = new();
     private PlayerRace _race;
     private RaceCall _call;
     private Teleports _teleports;
@@ -163,6 +166,7 @@ public class NetBehaviour : MonoBehaviour
         _hideUi = new HideUi(Log);
         _doors = new CarDoors(Log);
         _traffic = new Traffic(Log);
+        _shared = new TrafficSync(Log, _traffic, (w, method) => _peer?.Send(w, method));
         _race = new PlayerRace(Log, SendRace, () => _parking.CurrentSpot, _remotes, text => _chat.AddNotice(text), () => PlayerStats.OwnTag(_myName));
         _call = new RaceCall(Log, _race, () => PlayerStats.OwnTag(_myName));
         _crews = new CrewState(SendCrewCommand);
@@ -231,6 +235,14 @@ public class NetBehaviour : MonoBehaviour
         {
             DrawRemotes(_frameMs, RefreshOrigin());
             _walkers.Animate(_remotes.Values);
+        }
+        catch (Exception e)
+        {
+            Log.LogError(e);
+        }
+        try
+        {
+            DrawTraffic();
         }
         catch (Exception e)
         {
@@ -316,6 +328,36 @@ public class NetBehaviour : MonoBehaviour
             SendBlob(BlobKind.Hinges, new[] { _sentDoors });
         }
         _traffic.Tick();
+        ShareTraffic(now, offset);
+    }
+
+    [HideFromIl2Cpp]
+    private void ShareTraffic(long now, Num.Vector3 offset)
+    {
+        if (!_welcomed || _peer == null)
+            return;
+        var flags = _shared.Flags;
+        if (flags != _sentTrafficFlags)
+        {
+            _sentTrafficFlags = flags;
+            _writer.Reset();
+            _writer.Put((byte)MsgType.TrafficHello);
+            _writer.Put(flags);
+            _peer.Send(_writer, DeliveryMethod.ReliableOrdered);
+        }
+        if (_car == null)
+            return;
+        _watchers.Clear();
+        foreach (var remote in _remotes.Values)
+            if (remote.Interp.Scene == _scene && remote.Interp.TryLast(out var world))
+                _watchers.Add(world);
+        _shared.TickShare(now, _scene, offset, _watchers, _peer.GetMaxSinglePacketSize(DeliveryMethod.Unreliable) - 2);
+    }
+
+    private void DrawTraffic()
+    {
+        var viewer = _car != null ? _car.transform.position : Vector3.zero;
+        _shared.Draw(_frameMs, RefreshOrigin(), viewer, _scene, _car == null || InPersonalScene);
     }
 
     // garage, car storage and the shops in there are your own little world. everyone else waits till you're back out,
@@ -1067,6 +1109,8 @@ public class NetBehaviour : MonoBehaviour
             _owner._sentStats = null;
             _owner._sentMap = null;
             _owner._sentDoors = 0;
+            _owner._sentTrafficFlags = 0;
+            _owner._shared.Reset();
             _owner._buildDue = true;
             _owner.ClearRemotes();
         }
@@ -1104,6 +1148,8 @@ public class NetBehaviour : MonoBehaviour
                         reader.GetBytes(_owner._nonce, Identity.NonceBytes);
                     }
                     _owner._welcomed = true;
+                    _owner._sentTrafficFlags = 0;
+                    _owner._shared.SetMe(_owner._myId);
                     _owner._status = $"online as {_owner._myName}";
                     _owner._myAvatar ??= Avatars.Initial(_owner._myName);
                     _owner.SendPicture();
@@ -1223,6 +1269,18 @@ public class NetBehaviour : MonoBehaviour
                     break;
                 case MsgType.LiveryPart:
                     _owner._liveries.OnPart(reader);
+                    break;
+                case MsgType.TrafficRole:
+                    _owner._shared.OnRole(reader.GetByte(), reader.GetBool());
+                    break;
+                case MsgType.TrafficSpawn:
+                    _owner._shared.OnSpawns(reader);
+                    break;
+                case MsgType.TrafficBatch:
+                    _owner._shared.OnBatch(reader, (long)_owner._frameMs);
+                    break;
+                case MsgType.TrafficGone:
+                    _owner._shared.OnGone(reader);
                     break;
             }
         }
