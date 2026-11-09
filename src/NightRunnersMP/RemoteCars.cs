@@ -92,6 +92,7 @@ internal sealed class RemoteCars
 {
     private const float SpawnTimeoutSeconds = 60f;
     private const float RetrySeconds = 3f;
+    private const float SpawnGapSeconds = 1f;
     private const float FailedSeconds = 120f;
     private const int MaxSpawnTries = 6;
     private const float HalfBuiltRange = 2f;
@@ -251,6 +252,7 @@ internal sealed class RemoteCars
         // before the callbacks, a throw in one held the queue for the whole timeout
         var done = _current;
         _current = null;
+        _retryAt = Time.unscaledTime + SpawnGapSeconds;
         if (done.Built != null)
         {
             done.Built(result);
