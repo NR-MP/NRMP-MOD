@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Threading.Tasks;
 using BepInEx.Logging;
 using LiteNetLib.Utils;
 using NightRunnersMP.Shared;
@@ -35,6 +39,8 @@ internal sealed class LiverySync
     private readonly List<string> _unused = new();
     private readonly Dictionary<string, float> _unusedSince = new();
     private readonly List<Remote> _gone = new();
+    private readonly HashSet<string> _cleaning = new();
+    private readonly ConcurrentQueue<(string Hash, int Total, int Length, string Error)> _cleaned = new();
     private float _pruneAt;
     private readonly HashSet<string> _have = new();
     private readonly HashSet<string> _uploaded = new();
@@ -109,6 +115,7 @@ internal sealed class LiverySync
     public void Tick(IEnumerable<Remote> remotes, bool hold)
     {
         Upload();
+        Cleaned();
         if (!hold)
         {
             foreach (var remote in remotes)
@@ -241,7 +248,7 @@ internal sealed class LiverySync
             _have.Add(hash);
             return true;
         }
-        if (!_partial.ContainsKey(hash) && (!_asked.TryGetValue(hash, out var at) || Time.unscaledTime >= at))
+        if (!_partial.ContainsKey(hash) && !_cleaning.Contains(hash) && (!_asked.TryGetValue(hash, out var at) || Time.unscaledTime >= at))
         {
             _asked[hash] = Time.unscaledTime + AskSeconds;
             var bytes = Convert.FromHexString(hash);
@@ -289,7 +296,7 @@ internal sealed class LiverySync
         var offset = reader.GetInt();
         var count = reader.AvailableBytes;
         // only ones i asked for, nobody gets to fill my memory or folder
-        if (!_asked.ContainsKey(hash) || _have.Contains(hash))
+        if (!_asked.ContainsKey(hash) || _have.Contains(hash) || _cleaning.Contains(hash))
             return;
         if (total <= 0 || total > Protocol.MaxLiveryBytes || offset < 0 || count > total - offset)
             return;
@@ -319,33 +326,158 @@ internal sealed class LiverySync
             return;
         }
         var start = SlowStep.Start();
-        var clean = Clean(data);
-        SlowStep.Stop(start, $"cleaning livery {hash}");
-        if (clean == null)
+        var pixels = Pixels(data, out var width, out var height, out var channels);
+        SlowStep.Stop(start, $"reading livery {hash}");
+        if (pixels == null)
         {
             _have.Add(hash);
             _log.LogWarning($"Livery {hash} thrown away, it isn't a picture unity can read");
             return;
         }
-        File.WriteAllBytes(PathOf(hash), clean);
-        _log.LogInfo($"Livery {hash} downloaded, {total} bytes, kept as a clean {clean.Length} byte png");
+        _cleaning.Add(hash);
+        var path = PathOf(hash);
+        Task.Run(() =>
+        {
+            try
+            {
+                var clean = Png(pixels, width, height, channels);
+                var temp = path + ".part";
+                File.WriteAllBytes(temp, clean);
+                File.Move(temp, path, true);
+                _cleaned.Enqueue((hash, total, clean.Length, null));
+            }
+            catch (Exception e)
+            {
+                _cleaned.Enqueue((hash, total, 0, e.Message));
+            }
+        });
     }
 
-    // pixels only, into a brand new png. whatever else was tucked in the file stays behind. a hitch on a big one, once per livery
-    private static byte[] Clean(byte[] data)
+    private void Cleaned()
     {
+        while (_cleaned.TryDequeue(out var done))
+        {
+            _cleaning.Remove(done.Hash);
+            if (done.Error != null)
+            {
+                _have.Add(done.Hash);
+                _log.LogWarning($"Livery {done.Hash} thrown away, saving it failed: {done.Error}");
+            }
+            else
+            {
+                _log.LogInfo($"Livery {done.Hash} downloaded, {done.Total} bytes, kept as a clean {done.Length} byte png");
+            }
+        }
+    }
+
+    // pixels only, into a brand new png. whatever else was tucked in the file stays behind
+    private static byte[] Pixels(byte[] data, out int width, out int height, out int channels)
+    {
+        width = height = channels = 0;
         var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false) { hideFlags = HideFlags.HideAndDontSave };
         try
         {
             if (!ImageConversion.LoadImage(texture, data))
                 return null;
-            byte[] png = ImageConversion.EncodeToPNG(texture);
-            return png != null && png.Length > 0 ? png : null;
+            width = texture.width;
+            height = texture.height;
+            var format = texture.format;
+            channels = format == TextureFormat.RGB24 ? 3 : 4;
+            if (format is TextureFormat.RGBA32 or TextureFormat.RGB24)
+            {
+                var raw = texture.GetRawTextureData();
+                if (raw != null && raw.Length >= width * height * channels)
+                    return Copy(raw.Pointer, width * height * channels);
+            }
+            channels = 4;
+            var colors = texture.GetPixels32();
+            return colors != null && colors.Length == width * height ? Copy(colors.Pointer, width * height * 4) : null;
         }
         finally
         {
             UnityEngine.Object.Destroy(texture);
         }
+    }
+
+    // past the il2cpp array header
+    private static byte[] Copy(IntPtr array, int size)
+    {
+        var bytes = new byte[size];
+        Marshal.Copy(array + 4 * IntPtr.Size, bytes, 0, size);
+        return bytes;
+    }
+
+    // unity's rows go bottom up
+    private static byte[] Png(byte[] pixels, int width, int height, int channels)
+    {
+        var stride = width * channels;
+        var packed = new MemoryStream();
+        using (var zlib = new ZLibStream(packed, System.IO.Compression.CompressionLevel.Fastest, true))
+        {
+            var row = new byte[stride + 1];
+            row[0] = 1;
+            for (var y = height - 1; y >= 0; y--)
+            {
+                var at = y * stride;
+                for (var x = 0; x < stride; x++)
+                    row[x + 1] = (byte)(pixels[at + x] - (x >= channels ? pixels[at + x - channels] : 0));
+                zlib.Write(row, 0, row.Length);
+            }
+        }
+        var png = new MemoryStream();
+        png.Write(new byte[] { 0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A });
+        var header = new byte[13];
+        PutBigEndian(header, 0, width);
+        PutBigEndian(header, 4, height);
+        header[8] = 8;
+        header[9] = (byte)(channels == 4 ? 6 : 2);
+        Chunk(png, "IHDR", header, header.Length);
+        Chunk(png, "IDAT", packed.GetBuffer(), (int)packed.Length);
+        Chunk(png, "IEND", Array.Empty<byte>(), 0);
+        return png.ToArray();
+    }
+
+    private static void Chunk(Stream to, string type, byte[] data, int length)
+    {
+        var head = new byte[8];
+        PutBigEndian(head, 0, length);
+        for (var i = 0; i < 4; i++)
+            head[4 + i] = (byte)type[i];
+        to.Write(head, 0, 8);
+        to.Write(data, 0, length);
+        var tail = new byte[4];
+        PutBigEndian(tail, 0, (int)(Crc(Crc(0xFFFFFFFFu, head, 4, 4), data, 0, length) ^ 0xFFFFFFFFu));
+        to.Write(tail, 0, 4);
+    }
+
+    private static readonly uint[] CrcTable = MakeCrcTable();
+
+    private static uint[] MakeCrcTable()
+    {
+        var table = new uint[256];
+        for (uint n = 0; n < 256; n++)
+        {
+            var c = n;
+            for (var k = 0; k < 8; k++)
+                c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[n] = c;
+        }
+        return table;
+    }
+
+    private static uint Crc(uint crc, byte[] data, int offset, int length)
+    {
+        for (var i = offset; i < offset + length; i++)
+            crc = CrcTable[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+        return crc;
+    }
+
+    private static void PutBigEndian(byte[] data, int at, int value)
+    {
+        data[at] = (byte)(value >> 24);
+        data[at + 1] = (byte)(value >> 16);
+        data[at + 2] = (byte)(value >> 8);
+        data[at + 3] = (byte)value;
     }
 
     // only a png or jpg, and only up to MaxSide. sizes come from the header, nothing gets unpacked to find out.
