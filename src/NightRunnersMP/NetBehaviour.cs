@@ -57,6 +57,7 @@ public class NetBehaviour : MonoBehaviour
     private RemoteSound _sound;
     private bool _engineOn;
     private RemoteWheels _wheels;
+    private readonly RemoteLights _lights = new();
     private readonly TestInput _testInput = new();
     private PlayerCards _cards;
     private readonly List<byte> _here = new();
@@ -751,6 +752,7 @@ public class NetBehaviour : MonoBehaviour
             Gear = CarState.PackGear(_car.currentGear, _car.direction < 0),
         };
         RemoteWheels.Fill(ref state, _car);
+        state.Smoke |= RemoteLights.Pack(_car);
         if (PlayerCollisions.Value)
             state.Smoke |= CarState.SolidBit;
         if (!_pacer.ShouldSend(state, now))
@@ -818,6 +820,8 @@ public class NetBehaviour : MonoBehaviour
             _sound.Tick(_remotes.Values, _car.transform.position);
             _wheels.Tick(_remotes.Values, _car.transform.position);
         }
+        if (!personal)
+            _lights.Tick(_remotes.Values);
         if (_menu != null)
         {
             _menu.Ping = _peer != null ? _peer.Ping : -1;

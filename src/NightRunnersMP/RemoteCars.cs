@@ -58,6 +58,8 @@ internal sealed class Remote
     public readonly List<WheelVisual> Wheels = new();
     public RCC_CarControllerV3 SoundCar;
     public float Revs;
+    public RCC_CarControllerV3 LightsCar;
+    public int HeadlightsSeen = -1;
     public byte[] LiveryFrom;
     public CarBuild.Job Livery;
     public GameObject LiveryCar;

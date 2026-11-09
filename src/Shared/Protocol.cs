@@ -154,6 +154,20 @@ public struct CarState
 
     public bool Solid => (Smoke & SolidBit) != 0;
 
+    public const byte LowBeamBit = 0x04;
+    public const byte HighBeamBit = 0x08;
+    public const byte BrakeBit = 0x10;
+    private const int IndicatorShift = 5;
+    private const byte IndicatorMask = 0x03;
+
+    public bool LowBeam => (Smoke & LowBeamBit) != 0;
+    public bool HighBeam => (Smoke & HighBeamBit) != 0;
+    public bool Braking => (Smoke & BrakeBit) != 0;
+    public int Indicators => (Smoke >> IndicatorShift) & IndicatorMask;
+
+    public static byte PackLights(bool lowBeam, bool highBeam, bool braking, int indicators) =>
+        (byte)((lowBeam ? LowBeamBit : 0) | (highBeam ? HighBeamBit : 0) | (braking ? BrakeBit : 0) | ((indicators & IndicatorMask) << IndicatorShift));
+
     public float FrontSlip => (Slip & 0x0F) / 15f;
     public float RearSlip => (Slip >> 4) / 15f;
 
