@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using BepInEx.Logging;
+using Il2CppInterop.Runtime;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using NightRunnersMP.Shared;
@@ -21,6 +22,8 @@ internal sealed class TrafficSync
     private const float MinCapturedSpeed = 0.1f;
     private const long MaxDeriveGapMs = 250;
     private const float RespawnMetres = 50f;
+    private const float StatusSeconds = 10f;
+    private const float RentRetrySeconds = 1f;
 
     private sealed class Tracked
     {
@@ -39,6 +42,7 @@ internal sealed class TrafficSync
         public TrafficCar Latest;
         public float SeenAt;
         public TrafficVehicle Vehicle;
+        public float RentAt;
     }
 
     private readonly ManualLogSource _log;
@@ -64,6 +68,12 @@ internal sealed class TrafficSync
     private ushort _nextId;
     private long _nextSendMs;
     private int _rented;
+    private float _statusAt;
+    private int _noEntry;
+    private int _far;
+    private int _lost;
+    private int _full;
+    private string _status;
 
     public TrafficSync(ManualLogSource log, Traffic traffic, Action<NetDataWriter, DeliveryMethod> send)
     {
@@ -249,7 +259,8 @@ internal sealed class TrafficSync
             Complain("capture", e);
             return false;
         }
-        var world = ToNum(snap.Position) + offset;
+        // capture hands back the replay's absolute position, ours adds the origin itself
+        var world = ToNum(vehicle.transform.position) + offset;
         if (tracked.LastMs > 0 && Num.Vector3.DistanceSquared(world, tracked.LastWorld) > RespawnMetres * RespawnMetres)
         {
             _gone.Add(tracked.Id);
@@ -322,10 +333,14 @@ internal sealed class TrafficSync
             ReleaseAll();
             return;
         }
+        // our own traffic still holds the pool until Traffic turns it off
+        if (coordinator.IsTrafficEnabled)
+            return;
         var pool = coordinator.TrafficPool;
         var camera = Camera.main;
         var eye = camera != null ? camera.transform.position : viewer;
         _dropped.Clear();
+        _noEntry = _far = 0;
         foreach (var ghost in _ghosts.Values)
         {
             if (Time.unscaledTime - ghost.SeenAt > StaleSeconds)
@@ -333,6 +348,8 @@ internal sealed class TrafficSync
                 _dropped.Add(ghost.Id);
                 continue;
             }
+            if (ghost.Entry == null)
+                _noEntry++;
             if (ghost.Entry == null || _badEntries.Contains(ghost.Entry) || !ghost.Interp.HasData || ghost.Interp.Scene != scene
                 || !ghost.Interp.TrySample(nowMs, out var world, out var turn))
             {
@@ -342,6 +359,7 @@ internal sealed class TrafficSync
             var position = ToUnity(world - offset);
             if ((position - viewer).sqrMagnitude > GhostMetres * GhostMetres)
             {
+                _far++;
                 Release(ghost);
                 continue;
             }
@@ -350,8 +368,10 @@ internal sealed class TrafficSync
             {
                 ghost.Vehicle = null;
                 _rented--;
+                _lost++;
             }
-            if (ghost.Vehicle == null && (pool == null || _rented >= MaxGhosts || !Rent(coordinator, pool, ghost, position, rotation)))
+            if (ghost.Vehicle == null && (pool == null || _rented >= MaxGhosts || Time.unscaledTime < ghost.RentAt
+                || !Rent(coordinator, pool, ghost, position, rotation)))
                 continue;
             Apply(coordinator, ghost, position, rotation, eye);
         }
@@ -360,22 +380,40 @@ internal sealed class TrafficSync
             if (_ghosts.Remove(id, out var ghost))
                 Release(ghost);
         }
+        LogStatus();
+    }
+
+    private void LogStatus()
+    {
+        if (Time.unscaledTime < _statusAt)
+            return;
+        _statusAt = Time.unscaledTime + StatusSeconds;
+        var status = $"Traffic: {_ghosts.Count} shared cars, showing {_rented}, {_entries.Count} known";
+        if (_noEntry + _far + _lost + _full > 0)
+            status += $", unknown {_noEntry}, too far {_far}, lost {_lost}, pool full {_full}";
+        _lost = _full = 0;
+        if (status == _status)
+            return;
+        _status = status;
+        _log.LogInfo(status);
     }
 
     private bool Rent(TrafficCoordinator coordinator, GameObjectPool pool, Ghost ghost, Vector3 position, Quaternion rotation)
     {
         try
         {
-            var context = new PoolRentContext(PoolRentMode.Traffic, position, rotation, null, ghost.Id, 0);
-            if (!pool.TryRent(ghost.Entry, context, out var result) || !result.Succeeded || result.Instance == null)
+            var context = new PoolRentContext(PoolRentMode.Traffic, position, rotation, coordinator.transform, ghost.Id, 0);
+            var instance = TryRent(pool, ghost.Entry, context);
+            if (instance == null)
             {
-                Bad(ghost.Entry);
+                ghost.RentAt = Time.unscaledTime + RentRetrySeconds;
+                _full++;
                 return false;
             }
-            var vehicle = result.Instance.GetComponent<TrafficVehicle>();
+            var vehicle = instance.GetComponent<TrafficVehicle>();
             if (vehicle == null)
             {
-                pool.Return(result.Instance);
+                pool.Return(instance);
                 Bad(ghost.Entry);
                 return false;
             }
@@ -384,6 +422,7 @@ internal sealed class TrafficSync
                 coordinator.UnregisterVehicle(vehicle);
             vehicle.BindCoordinator(coordinator);
             vehicle.MarkReplayPresentationGhost(true);
+            vehicle.SetSimulationFrozen(true);
             ghost.Vehicle = vehicle;
             _rented++;
             return true;
@@ -394,6 +433,29 @@ internal sealed class TrafficSync
             Bad(ghost.Entry);
             return false;
         }
+    }
+
+    private static IntPtr _tryRent;
+
+    // PoolRentResult holds objects, and the wrapper's out copy of it overwrites managed memory, so the call is made by hand
+    private static unsafe GameObject TryRent(GameObjectPool pool, string entry, PoolRentContext context)
+    {
+        if (_tryRent == IntPtr.Zero)
+            _tryRent = IL2CPP.GetIl2CppMethod(Il2CppClassPointerStore<GameObjectPool>.NativeClassPtr, false, nameof(GameObjectPool.TryRent),
+                "System.Boolean", "System.String", "PlanetJem.Pooling.PoolRentContext", "PlanetJem.Pooling.PoolRentResult&");
+        const int instanceAt = 0x0, succeededAt = 0x10;
+        var result = stackalloc byte[0x20];
+        var args = stackalloc IntPtr[3];
+        args[0] = IL2CPP.ManagedStringToIl2Cpp(entry);
+        args[1] = IL2CPP.il2cpp_object_unbox(context.Pointer);
+        args[2] = (IntPtr)result;
+        var error = IntPtr.Zero;
+        var ok = IL2CPP.il2cpp_runtime_invoke(_tryRent, pool.Pointer, (void**)args, ref error);
+        Il2CppInterop.Runtime.Il2CppException.RaiseExceptionIfNecessary(error);
+        if (ok == IntPtr.Zero || !*(bool*)IL2CPP.il2cpp_object_unbox(ok) || !*(bool*)(result + succeededAt))
+            return null;
+        var instance = *(IntPtr*)(result + instanceAt);
+        return instance == IntPtr.Zero ? null : new GameObject(instance);
     }
 
     private void Apply(TrafficCoordinator coordinator, Ghost ghost, Vector3 position, Quaternion rotation, Vector3 eye)
@@ -427,16 +489,10 @@ internal sealed class TrafficSync
             var body = vehicle.Rigidbody;
             if (body != null && !body.isKinematic)
                 body.isKinematic = true;
-            if (vehicle.LodLevel == TrafficLodLevel.Physics)
-            {
-                ReplayTrafficApplier.ApplyPhysicsPose(vehicle, ref snap);
-                if (car.HasWheels)
-                    ReplayTrafficApplier.ApplyPhysicsWheels(vehicle, ref snap);
-            }
-            else
-            {
-                ReplayTrafficApplier.ApplyKinematicPose(vehicle, ref snap);
-            }
+            // the physics pose zeroes velocity, which Unity warns about every frame on a kinematic body
+            ReplayTrafficApplier.ApplyKinematicPose(vehicle, ref snap);
+            if (vehicle.LodLevel == TrafficLodLevel.Physics && car.HasWheels)
+                ReplayTrafficApplier.ApplyPhysicsWheels(vehicle, ref snap);
             ReplayTrafficApplier.ApplyPresentation(vehicle, ref snap);
         }
         catch (Exception e)
