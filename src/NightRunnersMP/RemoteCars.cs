@@ -64,6 +64,18 @@ internal sealed class Remote
     public byte[] LiveryFrom;
     public CarBuild.Job Livery;
     public GameObject LiveryCar;
+    public int Ping = -1;
+    public byte Signals;
+    public AudioSource Horn;
+    public GameObject HornCar;
+    public bool NosOn;
+    public DuelState Duel;
+    public byte RaceRival = Protocol.NoRacer;
+    public Color? CrewColour;
+
+    public bool Racing => RaceRival != Protocol.NoRacer;
+
+    public bool Spectating => (Signals & Signal.Spectating) != 0;
 
     // from the server's crew list. a bot's comes with its stats, a player's stats can say anything
     public string ServerCrew = "";

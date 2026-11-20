@@ -26,6 +26,7 @@ internal sealed class HideUi
         {
             _checked = true;
             WarnIfGameUses(_log, Key);
+            WarnIfGameUses(_log, CarSignals.HornKey.Value);
         }
         if (Hidden && blocked)
             Show();

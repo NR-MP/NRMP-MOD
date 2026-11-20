@@ -34,6 +34,10 @@ internal sealed class MultiplayerMenu
     private readonly Teleports.Locate _locate;
     private readonly Action _applyCollisions;
     private readonly Traffic _traffic;
+    private readonly Action<Remote> _report;
+    private readonly NetStats _stats;
+    private readonly Spectate _spectate;
+    private readonly Func<bool> _canWatch;
     private readonly Il2CppSystem.Object _cursorOwner = new();
     private MenuUi _ui;
     private Il2CppSystem.IDisposable _cursor;
@@ -57,12 +61,13 @@ internal sealed class MultiplayerMenu
     private int _builtFrame = -1;
     private bool _fresh;
     private readonly List<(string Title, string Subtitle, string Hash, CustomMap Map, int Count)> _rooms = new();
-    private readonly Action<Remote> _report;
     private readonly List<Teleports.Place> _here = new();
     private readonly List<Teleports.Place> _teleportRows = new();
     private readonly List<CrewInfo> _others = new();
     private readonly List<Remote> _loose = new();
     private readonly List<(string Name, Texture2D Picture, bool Has, Remote Who)> _players = new();
+    private static readonly int[] CrewColours = { 0xE53935, 0xFB8C00, 0xFDD835, 0x43A047, 0x00ACC1, 0x1E88E5, 0x8E24AA, 0xEC407A, 0xFFFFFF };
+    private const float SwatchSide = 22f;
     private readonly HashSet<car_carOrigin.ModelType> _owned = new();
     private List<CarPicker.Stored> _stored = new();
 
@@ -70,9 +75,12 @@ internal sealed class MultiplayerMenu
 
     public int Ping { get; set; } = -1;
 
-    public MultiplayerMenu(ManualLogSource log, CarPicker picker, CrewState crews, PlayerRace race, Teleports teleports, Maps maps, Teleports.Locate locate, Action applyCollisions, Traffic traffic, Action<Remote> report)
+    public MultiplayerMenu(ManualLogSource log, CarPicker picker, CrewState crews, PlayerRace race, Teleports teleports, Maps maps, Teleports.Locate locate, Action applyCollisions, Traffic traffic, Action<Remote> report,
+        NetStats stats, Spectate spectate, Func<bool> canWatch)
     {
-        _report = report;
+        _stats = stats;
+        _spectate = spectate;
+        _canWatch = canWatch;
         _log = log;
         _picker = picker;
         _crews = crews;
@@ -82,6 +90,7 @@ internal sealed class MultiplayerMenu
         _locate = locate;
         _applyCollisions = applyCollisions;
         _traffic = traffic;
+        _report = report;
     }
 
     public void Draw(bool connected, bool blocked, string myName, Texture2D myPicture, bool hasPicture, ICollection<Remote> remotes, RCC_CarControllerV3 car)
@@ -96,7 +105,7 @@ internal sealed class MultiplayerMenu
         if (e.type == EventType.KeyDown && e.keyCode == ToggleKey && !blocked)
         {
             if (!_open)
-                Open(Page.Home);
+                Open(_spectate.Active ? Page.Players : Page.Home);
             SetOpen(!_open);
             e.Use();
             return;
@@ -147,7 +156,7 @@ internal sealed class MultiplayerMenu
                     DrawCrew(remotes);
                     break;
                 case Page.Players:
-                    DrawPlayers(myName, myPicture, hasPicture, remotes);
+                    DrawPlayers(myName, myPicture, hasPicture, remotes, car);
                     break;
                 case Page.Cars:
                     DrawCars(car);
@@ -196,7 +205,7 @@ internal sealed class MultiplayerMenu
         Page.Cars => "Click a car, then add it to your garage.",
         Page.Crew when _crews.Mine == null => "Type a name to start a crew.",
         Page.Settings => "Only changes your own game.",
-        Page.Players => "To race someone, walk up to their car at a PA.",
+        Page.Players => "Race: walk up to a car at a PA, or flash your headlights twice behind one on the road.",
         Page.Profile => $"{ToggleKey} or Esc closes the menu.",
         _ => "Click a row twice, or select it and press the red key.",
     };
@@ -495,6 +504,8 @@ internal sealed class MultiplayerMenu
         _primary = "Leave crew";
         _primaryAction = _crews.Leave;
         GUI.Label(new Rect(area.x, area.y, area.width, 26), $"LED BY {crew.Members[0].Name}", _ui.Small);
+        if (_crews.IsLeader && _crews.CanColour)
+            DrawCrewColours(area);
 
         // leader sees who to invite after the members
         var loose = _loose;
@@ -521,6 +532,22 @@ internal sealed class MultiplayerMenu
         }, canSelect: false);
     }
 
+    // the leader's pick shows on every member's name tag
+    private void DrawCrewColours(Rect area)
+    {
+        var mine = _crews.MyColour;
+        for (var i = 0; i < CrewColours.Length; i++)
+        {
+            var swatch = new Rect(area.xMax - (CrewColours.Length - i) * (SwatchSide + 4), area.y, SwatchSide, SwatchSide);
+            if (CrewColours[i] == mine)
+                _ui.Fill(new Rect(swatch.x - 2, swatch.y - 2, swatch.width + 4, swatch.height + 4), Color.white);
+            _ui.Fill(swatch, CrewState.ToColor(CrewColours[i]));
+            if (MenuUi.Clicked(swatch))
+                _crews.SetColour(CrewColours[i]);
+        }
+        GUI.Label(new Rect(area.xMax - CrewColours.Length * (SwatchSide + 4) - 130, area.y, 120, 26), "TAG COLOUR", _ui.Small);
+    }
+
     private void CreateCrew()
     {
         if (_crewDraft.Trim().Length == 0)
@@ -529,7 +556,7 @@ internal sealed class MultiplayerMenu
         _crewDraft = "";
     }
 
-    private void DrawPlayers(string myName, Texture2D picture, bool hasPicture, ICollection<Remote> remotes)
+    private void DrawPlayers(string myName, Texture2D picture, bool hasPicture, ICollection<Remote> remotes, RCC_CarControllerV3 car)
     {
         var rows = _players;
         if (_fresh)
@@ -538,11 +565,17 @@ internal sealed class MultiplayerMenu
             rows.Add(($"{PlayerStats.OwnTag(myName)} (YOU)", picture, hasPicture, null));
             rows.AddRange(remotes.OrderBy(r => r.Id).Select(r => (r.Tag, r.Avatar, r.HasPicture, r)));
         }
+        if (_spectate.Active)
+            (_primary, _primaryAction) = ("Stop watching", () =>
+            {
+                SetOpen(false);
+                _spectate.Stop("Stopped watching");
+            });
         DrawList(MenuUi.List, rows.Count, (rect, i) =>
         {
             var (name, rowPicture, has, who) = rows[i];
             Avatars.Draw(new Rect(rect.x + 8, rect.y + 6, 40, 40), rowPicture, has, name);
-            _ui.RowText(rect, name, indent: AvatarIndent);
+            _ui.RowText(rect, name, who == null ? MyNetwork() : Network(who, remotes, car), null, AvatarIndent);
             if (who == null || who.IsBot)
                 return;
             if (_ui.Button(ButtonIn(rect, 0), "REPORT"))
@@ -550,7 +583,30 @@ internal sealed class MultiplayerMenu
                 SetOpen(false);
                 _report(who);
             }
+            else if (who.Racing && !_spectate.Active && _canWatch() && _ui.Button(ButtonIn(rect, 1), "WATCH") && _spectate.Start(who, car))
+            {
+                SetOpen(false);
+            }
         }, canSelect: false);
+    }
+
+    private string MyNetwork() => _stats.Ping < 0 ? "" :
+        $"Ping {_stats.Ping} ms  ·  loss {_stats.LossPercent:0.#}%  ·  down {_stats.DownKb:0.0} KB/s  ·  up {_stats.UpKb:0.0} KB/s";
+
+    private string Network(Remote remote, ICollection<Remote> remotes, RCC_CarControllerV3 car)
+    {
+        var line = remote.Ping >= 0 ? $"Ping {remote.Ping} ms  ·  " : "";
+        line += remote.MapHash.Length > 0 ? remote.MapName : "Mount Haruna";
+        if (remote.Racing)
+        {
+            var rival = remotes.FirstOrDefault(r => r.Id == remote.RaceRival);
+            line += rival != null ? $"  ·  racing {rival.Name}" : "  ·  racing";
+        }
+        else if (remote.Spectating)
+            line += "  ·  watching a race";
+        else if (car != null && remote.Shown && remote.LocalPosition is Vector3 position)
+            line += $"  ·  {Vector3.Distance(position, car.transform.position):0} m away";
+        return line;
     }
 
     private void DrawCars(RCC_CarControllerV3 car)

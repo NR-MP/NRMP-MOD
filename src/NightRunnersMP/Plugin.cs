@@ -29,6 +29,8 @@ public class Plugin : BasePlugin
 
         Traffic.Off = Config.Bind("Player", "TrafficOff", false, "No traffic on your screen, others still have theirs. Set in the game under F7, Settings.");
 
+        CarSignals.HornKey = Config.Bind("Player", "HornKey", UnityEngine.KeyCode.H, "Hold to honk, everyone near you hears it.");
+
         RemoteBuilds.Enabled = Config.Bind("Player", "FitPlayersParts", true, "Fit other players' parts to their cars. Not yet tried in the game.").Value;
 
         NetBehaviour.SpawnStop = Config.Bind("Player", "SpawnStop", GodConstant.MeetSpots_All.MH_IKAHO_PA,

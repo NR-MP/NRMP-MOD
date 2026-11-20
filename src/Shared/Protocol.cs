@@ -88,6 +88,7 @@ public enum MsgType : byte
     TrafficBatch = 43,
     TrafficGone = 44,
     Report = 45,
+    CrewColours = 46,
 }
 
 // stuff everyone should see, late joiners too. server stores and forwards blobs unread, new kind = no server change, no bump
@@ -100,6 +101,57 @@ public enum BlobKind : byte
     Hit = 4,
     Hinges = 5,
     Ping = 6,
+    Signals = 7,
+    Duel = 8,
+    // who i'm racing, empty when i'm not. spectators pick races from these
+    Race = 9,
+}
+
+public static class Signal
+{
+    public const byte Horn = 1;
+    public const byte Nos = 2;
+    // watching someone else's race, my car isn't where my last state says
+    public const byte Spectating = 4;
+}
+
+public enum DuelPhase : byte
+{
+    None,
+    Offer,
+    Accept,
+    Go,
+    Result,
+}
+
+// a flash to race out on the road. no server in it, both games read each other's blob. the challenger calls the go and the winner
+public struct DuelState
+{
+    public const int Size = 1 + 1 + 8 + 1;
+
+    public DuelPhase Phase;
+    public byte Rival;
+    // server clock ticks, each side moves it onto its own
+    public long GoAt;
+    public byte Winner;
+
+    public byte[] Write()
+    {
+        var w = new NetDataWriter();
+        w.Put((byte)Phase);
+        w.Put(Rival);
+        w.Put(GoAt);
+        w.Put(Winner);
+        return w.CopyData();
+    }
+
+    public static DuelState Read(byte[] blob)
+    {
+        if (blob == null || blob.Length < Size)
+            return default;
+        var r = new NetDataReader(blob);
+        return new DuelState { Phase = (DuelPhase)r.GetByte(), Rival = r.GetByte(), GoAt = r.GetLong(), Winner = r.GetByte() };
+    }
 }
 
 public enum RejectReason : byte
