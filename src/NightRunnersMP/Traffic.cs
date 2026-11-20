@@ -52,7 +52,23 @@ internal sealed class Traffic
         {
             coordinator.SetTrafficEnabled(true, false);
             _stopped = false;
+            Warmup(coordinator);
             _log.LogInfo("Traffic back on");
+        }
+    }
+
+    // fills the roads at once like after a fast travel, otherwise taking over from a host starts on empty roads
+    private void Warmup(TrafficCoordinator coordinator)
+    {
+        try
+        {
+            var car = coordinator.ResolvePlayerCar();
+            if (car != null)
+                coordinator.WarmupAroundAsync(car.transform.position, new Il2CppSystem.Threading.CancellationToken());
+        }
+        catch (System.Exception e)
+        {
+            _log.LogWarning($"Traffic warmup failed: {e.Message}");
         }
     }
 

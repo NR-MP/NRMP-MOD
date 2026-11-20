@@ -18,6 +18,8 @@ internal sealed class TrafficSync
     private const float WheelMetres = 150f;
     private const float GhostMetres = 700f;
     private const float StaleSeconds = 3f;
+    private const float HostGoneSeconds = 2f;
+    private const float PauseHandOffSeconds = 1f;
     private const int MaxGhosts = 96;
     private const float MinCapturedSpeed = 0.1f;
     private const long MaxDeriveGapMs = 250;
@@ -69,6 +71,8 @@ internal sealed class TrafficSync
     private long _nextSendMs;
     private int _rented;
     private float _statusAt;
+    private float _batchAt;
+    private float _pausedSince = -1f;
     private int _noEntry;
     private int _far;
     private int _lost;
@@ -82,7 +86,20 @@ internal sealed class TrafficSync
         _send = send;
     }
 
-    public byte Flags => (byte)(TrafficWire.FlagCapable | (Traffic.Off.Value ? 0 : TrafficWire.FlagWants));
+    // a paused host's traffic stands still, so it stops asking to lead and someone else takes over
+    public byte Flags => (byte)(TrafficWire.FlagCapable | (Traffic.Off.Value || PausedLong() ? 0 : TrafficWire.FlagWants));
+
+    private bool PausedLong()
+    {
+        if (!Paused())
+        {
+            _pausedSince = -1f;
+            return false;
+        }
+        if (_pausedSince < 0f)
+            _pausedSince = Time.unscaledTime;
+        return Time.unscaledTime - _pausedSince > PauseHandOffSeconds;
+    }
 
     public bool Following => _authority != TrafficWire.NoAuthority && _authority != _myId;
 
@@ -108,6 +125,7 @@ internal sealed class TrafficSync
             _tracked.Clear();
         _authority = authority;
         _share = share;
+        _batchAt = Time.unscaledTime;
         _traffic.Following = Following;
         _log.LogInfo(authority == TrafficWire.NoAuthority ? "Traffic: own traffic"
             : authority == _myId ? (share ? "Traffic: sharing my traffic" : "Traffic: own traffic, nobody near")
@@ -151,6 +169,7 @@ internal sealed class TrafficSync
         var from = r.GetByte();
         if (from != _authority || !Following)
             return;
+        _batchAt = Time.unscaledTime;
         var header = TrafficBatchHeader.Read(r);
         for (var i = 0; i < header.Count && r.AvailableBytes >= TrafficCar.Size; i++)
         {
@@ -182,6 +201,18 @@ internal sealed class TrafficSync
         if (!Sharing || nowMs < _nextSendMs)
             return;
         _nextSendMs = Math.Max(_nextSendMs + 1000 / TrafficWire.SendRateHz, nowMs);
+        // pausing freezes our traffic, keep the others seeing it parked instead of losing it
+        if (Paused())
+        {
+            for (var i = 0; i < _cars.Count; i++)
+            {
+                var parked = _cars[i];
+                parked.Velocity = Num.Vector3.Zero;
+                _cars[i] = parked;
+            }
+            SendCars((uint)nowMs, scene, Math.Min(maxPacketBytes, TrafficWire.MaxPacketBytes));
+            return;
+        }
         var coordinator = TrafficCoordinator.Instance;
         foreach (var tracked in _tracked.Values)
             tracked.Seen = false;
@@ -216,6 +247,12 @@ internal sealed class TrafficSync
             _send(_writer, DeliveryMethod.ReliableOrdered);
         }
         SendCars((uint)nowMs, scene, Math.Min(maxPacketBytes, TrafficWire.MaxPacketBytes));
+    }
+
+    private static bool Paused()
+    {
+        var god = GodConstant.Instance;
+        return god != null && (god.gameIsPaused || god.freezeAllVehicles);
     }
 
     private void Gather(TrafficCoordinator coordinator, long nowMs, Num.Vector3 offset, List<Num.Vector3> watchers)
@@ -329,6 +366,18 @@ internal sealed class TrafficSync
     {
         var coordinator = TrafficCoordinator.Instance;
         if (!Following || coordinator == null || hidden)
+        {
+            ReleaseAll();
+            return;
+        }
+        // the host went quiet (left, loading, meetspot), run our own traffic till the server hands us the role or it's back
+        var hostGone = Time.unscaledTime - _batchAt > HostGoneSeconds;
+        if (_traffic.Following == hostGone)
+        {
+            _traffic.Following = !hostGone;
+            _log.LogInfo(hostGone ? "Traffic: host went quiet, own traffic for now" : "Traffic: host is back, showing the shared traffic");
+        }
+        if (hostGone)
         {
             ReleaseAll();
             return;
