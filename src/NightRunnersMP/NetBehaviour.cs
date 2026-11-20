@@ -31,6 +31,7 @@ public class NetBehaviour : MonoBehaviour
     // a car whose paint keeps changing (paint shop, another mod) would have everyone repaint it every second
     private const float PaintGapSeconds = 3f;
     private const float NameTagHeight = 2f;
+    private const string ReportCommand = "/report";
     private const string CrewChatCommand = "/c ";
     private const int WalkSendMs = 100;
     private const int WalkHeartbeatMs = 400;
@@ -185,7 +186,7 @@ public class NetBehaviour : MonoBehaviour
         _crash = new CrashGuard(Log, text => _chat.AddNotice(text));
         _hits = new CarHits(Log, SendHit);
         _maps = new Maps(Log, _teleports, text => _chat.AddNotice(text)) { Changed = () => { _crash.Reset(); UpdateScene(); } };
-        _menu = new MultiplayerMenu(Log, _picker, _crews, _race, _teleports, _maps, LocatePlayer, ApplyCollisions, _traffic);
+        _menu = new MultiplayerMenu(Log, _picker, _crews, _race, _teleports, _maps, LocatePlayer, ApplyCollisions, _traffic, r => _chat.Type($"{ReportCommand} {r.Id} "));
         // bots have no setting to send, they're always solid
         RemoteCars.TheyAreSolid = car => _remotes.Values.FirstOrDefault(r => r.Car == car) is not { } r || r.IsBot || r.Drive.Solid;
         _listener = new Listener(this);
@@ -651,9 +652,14 @@ public class NetBehaviour : MonoBehaviour
 
     private void SendCommand(string text)
     {
+        if (text.StartsWith(ReportCommand, StringComparison.OrdinalIgnoreCase))
+        {
+            SendReport(text.Substring(ReportCommand.Length).Trim());
+            return;
+        }
         if (!text.StartsWith(CrewChatCommand))
         {
-            _chat.AddNotice($"Unknown command, {CrewChatCommand}message talks to your crew");
+            _chat.AddNotice($"Unknown command, {CrewChatCommand}message talks to your crew, {ReportCommand} lists who you can report to the admins");
             return;
         }
         var said = text.Substring(CrewChatCommand.Length).Trim();
@@ -664,6 +670,46 @@ public class NetBehaviour : MonoBehaviour
         _writer.Put(said);
         _peer.Send(_writer, DeliveryMethod.ReliableOrdered);
         _chat.AddCrew(_myName, _myAvatar, _myHasPicture, said);
+    }
+
+    private void SendReport(string rest)
+    {
+        var players = _remotes.Values.Where(r => !r.IsBot).OrderBy(r => r.Id).ToList();
+        if (players.Count == 0)
+        {
+            _chat.AddNotice("Nobody else is online");
+            return;
+        }
+        var word = rest.Split(' ')[0];
+        var target = byte.TryParse(word, out var number) ? players.FirstOrDefault(r => r.Id == number) : null;
+        var taken = word.Length;
+        if (target == null)
+        {
+            // names can have spaces, so the longest name the line starts with wins
+            target = players.Where(r => rest.StartsWith(r.Name, StringComparison.OrdinalIgnoreCase)
+                    && (rest.Length == r.Name.Length || rest[r.Name.Length] == ' '))
+                .OrderByDescending(r => r.Name.Length).FirstOrDefault();
+            taken = target?.Name.Length ?? taken;
+        }
+        if (target == null && word.Length > 0)
+        {
+            var close = players.Where(r => r.Name.Contains(word, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (close.Count == 1)
+                target = close[0];
+            else if (close.Count > 1)
+                players = close;
+        }
+        if (target == null)
+        {
+            _chat.AddNotice($"Who? {ReportCommand} number what happened, or use REPORT in the F7 player list");
+            _chat.AddNotice(string.Join(",  ", players.Select(r => $"{r.Id}: {r.Name}")));
+            return;
+        }
+        _writer.Reset();
+        _writer.Put((byte)MsgType.Report);
+        _writer.Put(target.Id);
+        _writer.Put(rest.Substring(taken).Trim());
+        _peer.Send(_writer, DeliveryMethod.ReliableOrdered);
     }
 
     private void SendCrewCommand(CrewAction action, string text, byte slot)
@@ -1154,6 +1200,15 @@ public class NetBehaviour : MonoBehaviour
                 _owner._status = $"rejected: {reason}";
                 _owner._fatal = true;
                 Log.LogError($"Server rejected us: {reason}");
+                var why = reason switch
+                {
+                    RejectReason.WrongKey => "The server doesn't know your JoinKey. Run /key in the NRMP Discord for your own",
+                    RejectReason.NoRole => "Your Discord account doesn't have the player role, ask in the NRMP Discord",
+                    RejectReason.Banned => "You're banned from this server",
+                    _ => null,
+                };
+                if (why != null)
+                    _owner._chat?.AddNotice(why);
             }
             else
             {

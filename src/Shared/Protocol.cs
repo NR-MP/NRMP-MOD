@@ -87,6 +87,7 @@ public enum MsgType : byte
     TrafficSpawn = 42,
     TrafficBatch = 43,
     TrafficGone = 44,
+    Report = 45,
 }
 
 // stuff everyone should see, late joiners too. server stores and forwards blobs unread, new kind = no server change, no bump
@@ -107,6 +108,8 @@ public enum RejectReason : byte
     VersionMismatch = 2,
     WrongKey = 3,
     ServerFull = 4,
+    NoRole = 5,
+    Banned = 6,
 }
 
 public struct ConnectRequest

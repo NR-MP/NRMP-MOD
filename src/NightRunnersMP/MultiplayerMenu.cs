@@ -57,11 +57,12 @@ internal sealed class MultiplayerMenu
     private int _builtFrame = -1;
     private bool _fresh;
     private readonly List<(string Title, string Subtitle, string Hash, CustomMap Map, int Count)> _rooms = new();
+    private readonly Action<Remote> _report;
     private readonly List<Teleports.Place> _here = new();
     private readonly List<Teleports.Place> _teleportRows = new();
     private readonly List<CrewInfo> _others = new();
     private readonly List<Remote> _loose = new();
-    private readonly List<(string Name, Texture2D Picture, bool Has)> _players = new();
+    private readonly List<(string Name, Texture2D Picture, bool Has, Remote Who)> _players = new();
     private readonly HashSet<car_carOrigin.ModelType> _owned = new();
     private List<CarPicker.Stored> _stored = new();
 
@@ -69,8 +70,9 @@ internal sealed class MultiplayerMenu
 
     public int Ping { get; set; } = -1;
 
-    public MultiplayerMenu(ManualLogSource log, CarPicker picker, CrewState crews, PlayerRace race, Teleports teleports, Maps maps, Teleports.Locate locate, Action applyCollisions, Traffic traffic)
+    public MultiplayerMenu(ManualLogSource log, CarPicker picker, CrewState crews, PlayerRace race, Teleports teleports, Maps maps, Teleports.Locate locate, Action applyCollisions, Traffic traffic, Action<Remote> report)
     {
+        _report = report;
         _log = log;
         _picker = picker;
         _crews = crews;
@@ -533,14 +535,21 @@ internal sealed class MultiplayerMenu
         if (_fresh)
         {
             rows.Clear();
-            rows.Add(($"{PlayerStats.OwnTag(myName)} (YOU)", picture, hasPicture));
-            rows.AddRange(remotes.Select(r => (r.Tag, r.Avatar, r.HasPicture)));
+            rows.Add(($"{PlayerStats.OwnTag(myName)} (YOU)", picture, hasPicture, null));
+            rows.AddRange(remotes.OrderBy(r => r.Id).Select(r => (r.Tag, r.Avatar, r.HasPicture, r)));
         }
         DrawList(MenuUi.List, rows.Count, (rect, i) =>
         {
-            var (name, rowPicture, has) = rows[i];
+            var (name, rowPicture, has, who) = rows[i];
             Avatars.Draw(new Rect(rect.x + 8, rect.y + 6, 40, 40), rowPicture, has, name);
             _ui.RowText(rect, name, indent: AvatarIndent);
+            if (who == null || who.IsBot)
+                return;
+            if (_ui.Button(ButtonIn(rect, 0), "REPORT"))
+            {
+                SetOpen(false);
+                _report(who);
+            }
         }, canSelect: false);
     }
 

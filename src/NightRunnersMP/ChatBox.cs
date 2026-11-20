@@ -228,6 +228,12 @@ internal sealed class ChatBox
         }
     }
 
+    public void Type(string draft)
+    {
+        SetTyping(true);
+        _draft = draft;
+    }
+
     private void SetTyping(bool typing)
     {
         IsTyping = typing;
