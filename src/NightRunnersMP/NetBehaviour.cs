@@ -28,11 +28,15 @@ public class NetBehaviour : MonoBehaviour
     private const float UnloadMetres = 400f;
     private const float RestSeconds = 2f;
     private const float PaintSeconds = 1f;
+    // a car whose paint keeps changing (paint shop, another mod) would have everyone repaint it every second
+    private const float PaintGapSeconds = 3f;
     private const float NameTagHeight = 2f;
     private const string CrewChatCommand = "/c ";
     private const int WalkSendMs = 100;
     private const int WalkHeartbeatMs = 400;
     private const float WalkMoveMetres = 0.01f;
+    private const int PingShareMs = 5000;
+    private const int PingShareStep = 5;
     private static readonly string[] PlaceholderShaders =
         { "Unlit/Color", "Legacy Shaders/Diffuse", "Sprites/Default", "UI/Default", "Hidden/Internal-Colored" };
     private static readonly Color PlaceholderColor = new(0.8f, 0.25f, 0.1f, 1f);
@@ -80,12 +84,18 @@ public class NetBehaviour : MonoBehaviour
     private string _sentMap;
     private bool _buildDue = true;
     private float _nextPaint;
+    private float _paintSentAt = float.MinValue;
     private float _nextConnect;
     private long _nextSendMs;
 
     // the moment this frame shows, what the local car moves by. clock read mid frame is off by however long the frame took so far
     // and a remote car alongside you shakes at speed
     private double _frameMs;
+
+    // everyone's ping to the server, mine plus theirs is how old their car's state is when it gets here
+    private readonly Dictionary<byte, int> _pings = new();
+    private int _sentPing = -1;
+    private long _nextPingMs;
 
     private long _nextWalkMs;
     private long _walkSentMs;
@@ -99,6 +109,7 @@ public class NetBehaviour : MonoBehaviour
     private CrashGuard _crash;
     private CarHits _hits;
     private Rigidbody _carBody;
+    private Vector3 _stepVelocity;
     private ushort _scene;
     private string _sceneName;
     private GodConstant.Scene_currentType _lastSceneType;
@@ -188,6 +199,9 @@ public class NetBehaviour : MonoBehaviour
     {
         try
         {
+            // runs before the step, so in a frame this is the older of the two states the car is drawn between
+            if (_carBody != null)
+                _stepVelocity = _carBody.velocity;
             var free = !InPersonalScene && !_teleports.Busy && !_maps.Busy && _maps.Current == null && GodConstant.Instance?.scene_currentType == GodConstant.Scene_currentType.FREEROAM;
             _crash.FixedTick(_car, free);
             if (!InPersonalScene)
@@ -264,7 +278,7 @@ public class NetBehaviour : MonoBehaviour
             foreach (var remote in _remotes.Values)
             {
                 var i = remote.Interp;
-                Log.LogInfo($"Health: {remote.Name} delay {i.TargetDelayMs:F0} ms, ran out {i.RanOut}, pops {i.Pops}, resyncs {i.Resyncs}");
+                Log.LogInfo($"Health: {remote.Name} latency {i.LatencyMs:F0} ms, newest state {i.LeadMs:F0} ms old, ran out {i.RanOut}, pops {i.Pops}, resyncs {i.Resyncs}");
                 i.ResetCounts();
             }
             stats.Reset();
@@ -287,6 +301,8 @@ public class NetBehaviour : MonoBehaviour
             _nextSendMs = Math.Max(_nextSendMs + 1000 / Protocol.SendRateHz, now);
             SendState(now, offset);
         }
+        if (_welcomed && _peer != null)
+            SharePing(now);
         if (_welcomed && _car != null && now >= _nextWalkMs)
         {
             _nextWalkMs = now + WalkSendMs;
@@ -402,6 +418,7 @@ public class NetBehaviour : MonoBehaviour
         _doors.Forget(remote);
         _walkers.Forget(remote);
         _hits.Forget(remote.Id);
+        _pings.Remove(remote.Id);
     }
 
     [HideFromIl2Cpp]
@@ -486,6 +503,16 @@ public class NetBehaviour : MonoBehaviour
         _peer.Send(_writer, DeliveryMethod.ReliableOrdered);
     }
 
+    private void SharePing(long now)
+    {
+        var ping = _peer.Ping;
+        if (now < _nextPingMs || Math.Abs(ping - _sentPing) < PingShareStep)
+            return;
+        _nextPingMs = now + PingShareMs;
+        _sentPing = ping;
+        SendBlob(BlobKind.Ping, BitConverter.GetBytes((ushort)Math.Clamp(ping, 0, ushort.MaxValue)));
+    }
+
     private void SetOnline(bool online)
     {
         if (_online == online)
@@ -553,9 +580,10 @@ public class NetBehaviour : MonoBehaviour
         if (_car.carLocal == null)
             return;
         var paint = CarPaint.Read(_car.carLocal);
-        if (_sentPaint != null && paint.SequenceEqual(_sentPaint))
+        if (_sentPaint != null && (paint.SequenceEqual(_sentPaint) || Time.unscaledTime < _paintSentAt + PaintGapSeconds))
             return;
         _sentPaint = paint;
+        _paintSentAt = Time.unscaledTime;
         Log.LogInfo($"Local car paint {_car.carLocal.carPaint?.main_colour}");
         _writer.Reset();
         _writer.Put((byte)MsgType.SetPaint);
@@ -585,6 +613,8 @@ public class NetBehaviour : MonoBehaviour
             && now.SequenceEqual(remote.PaintedRead))
             return;
         var again = remote.PaintedCar == remote.Car && ReferenceEquals(remote.PaintedFrom, remote.Paint);
+        if (remote.PaintedCar == remote.Car && Time.unscaledTime < remote.RepaintAt)
+            return;
         try
         {
             CarPaint.Apply(god, car, remote.Paint);
@@ -597,6 +627,7 @@ public class NetBehaviour : MonoBehaviour
         }
         remote.PaintedCar = remote.Car;
         remote.PaintedFrom = remote.Paint;
+        remote.RepaintAt = Time.unscaledTime + PaintGapSeconds;
         remote.PaintedRead = CarPaint.Read(car);
         remote.LiveryCar = null;
         Log.LogInfo($"Painted {remote.Name}'s car {car.carPaint?.main_colour}{(again ? ", the game had changed it" : "")}{(remote.PaintedRead.SequenceEqual(remote.Paint) ? "" : ", reads back different")}");
@@ -792,13 +823,17 @@ public class NetBehaviour : MonoBehaviour
             _engineOn = _car.engineRunning;
             Log.LogInfo($"My engine running {_engineOn}, {_car.engineRPM:0} rpm");
         }
+        var poseMs = PoseTimeMs();
+        var stamp = Math.Floor(poseMs);
+        var velocity = ToNum(PoseVelocity());
         var state = new CarState
         {
-            TimeMs = (uint)PoseTimeMs(now),
+            TimeMs = (uint)(long)stamp,
             Scene = _scene,
-            Position = _origin.ToWorld(ToNum(t.position), offset),
+            // the stamp is whole ms, the pose isn't. at 300 km/h the cut off part is up to 8 cm, moved back so pose and stamp agree
+            Position = _origin.ToWorld(ToNum(t.position), offset) - velocity * (float)((poseMs - stamp) / 1000),
             Rotation = new Num.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
-            Velocity = _carBody != null ? ToNum(_carBody.velocity) : default,
+            Velocity = velocity,
             Rpm = _car.engineRunning ? (ushort)Mathf.Clamp(_car.engineRPM, 0f, ushort.MaxValue) : (ushort)0,
             Gas = (byte)(Mathf.Clamp01(_car.gasInput) * 255f),
             Gear = CarState.PackGear(_car.currentGear, _car.direction < 0),
@@ -814,26 +849,43 @@ public class NetBehaviour : MonoBehaviour
         state.Write(_writer);
         state.WriteDrive(_writer);
         _peer.Send(_writer, DeliveryMethod.Sequenced);
+        // litenetlib only flushes every 15 ms by itself, a different wait for every state
+        _net.TriggerUpdate();
     }
 
     // a car's transform is from earlier than this frame, by a different amount every frame. stamping it with frame time shakes it on other screens
-    private long PoseTimeMs(long now)
+    private double PoseTimeMs()
     {
         if (_carBody == null || _carBody.interpolation == RigidbodyInterpolation.Extrapolate)
-            return now;
+            return _frameMs;
         var behind = _carBody.interpolation == RigidbodyInterpolation.Interpolate
             ? Time.fixedDeltaTime
             : Time.time - Time.fixedTime;
-        return now - (long)(behind * 1000f);
+        return _frameMs - behind * 1000.0;
+    }
+
+    // the body is already a step past the pose an interpolated car is drawn at
+    private Vector3 PoseVelocity()
+    {
+        if (_carBody == null)
+            return default;
+        var velocity = _carBody.velocity;
+        return _carBody.interpolation == RigidbodyInterpolation.Interpolate
+            ? Vector3.Lerp(_stepVelocity, velocity, (Time.time - Time.fixedTime) / Time.fixedDeltaTime)
+            : velocity;
     }
 
     [HideFromIl2Cpp]
     private void DrawRemotes(double now, Num.Vector3 offset)
     {
         var personal = InPersonalScene;
+        var ping = _peer != null ? _peer.Ping : 0;
         foreach (var remote in _remotes.Values)
         {
-            var visible = !personal && remote.Interp.HasData && (remote.Interp.Scene == _scene || _race.IsRival(remote)) && (_car != null || _race.IsRival(remote)) && _race.Shows(remote)
+            remote.Interp.Predict = true;
+            // older clients don't share theirs, mine is the best guess
+            remote.Interp.LatencyMs = ping + (_pings.TryGetValue(remote.Id, out var theirs) ? theirs : ping);
+            var visible =!personal && remote.Interp.HasData && (remote.Interp.Scene == _scene || _race.IsRival(remote)) && (_car != null || _race.IsRival(remote)) && _race.Shows(remote)
                 && Near(remote, now, offset);
             remote.Shown = visible;
             if (visible && SpawnRealCars && remote.NeedsSpawn)
@@ -1120,6 +1172,7 @@ public class NetBehaviour : MonoBehaviour
             _owner._sentMap = null;
             _owner._sentDoors = 0;
             _owner._sentTrafficFlags = 0;
+            _owner._sentPing = -1;
             _owner._shared.Reset();
             _owner._buildDue = true;
             _owner.ClearRemotes();
@@ -1187,10 +1240,10 @@ public class NetBehaviour : MonoBehaviour
                     if (_owner._remotes.TryGetValue(reader.GetByte(), out var painted))
                     {
                         var paint = reader.GetRemainingBytes();
-                        if (CarPaint.Valid(paint))
-                            painted.Paint = paint;
-                        else
+                        if (!CarPaint.Valid(paint))
                             Log.LogWarning($"Bad paint from {painted.Name}, {paint.Length} bytes");
+                        else if (painted.Paint == null || !paint.SequenceEqual(painted.Paint))
+                            painted.Paint = paint;
                     }
                     break;
                 case MsgType.PlayerBlob:
@@ -1199,6 +1252,8 @@ public class NetBehaviour : MonoBehaviour
                         var kind = (BlobKind)reader.GetByte();
                         if (kind == BlobKind.Hit)
                             _owner._hits.Receive(owner, _owner._myId, reader.GetRemainingBytes());
+                        else if (kind == BlobKind.Ping)
+                            _owner._pings[owner.Id] = reader.AvailableBytes >= sizeof(ushort) ? reader.GetUShort() : 0;
                         else
                             ReadBlob(owner, kind, reader.GetRemainingBytes());
                     }

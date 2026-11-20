@@ -98,6 +98,7 @@ public enum BlobKind : byte
     // a car hit for one player, everyone gets it and only they use it
     Hit = 4,
     Hinges = 5,
+    Ping = 6,
 }
 
 public enum RejectReason : byte

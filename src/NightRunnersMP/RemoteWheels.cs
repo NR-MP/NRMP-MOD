@@ -34,7 +34,7 @@ internal sealed class WheelVisual
 internal sealed class RemoteWheels
 {
     private const float RangeMetres = 250f;
-    private const float SteerPerSecond = 300f;
+    private const float SteerSeconds = 0.05f;
     private const float DegreesPerRpmSecond = 6f;
     private const float MinSkid = 0.1f;
     private const float RayLift = 0.5f;
@@ -147,7 +147,7 @@ internal sealed class RemoteWheels
         var rpm = wheel.Front ? drive.FrontWheelRpm : drive.RearWheelRpm;
         wheel.Spin = Mathf.Repeat(wheel.Spin + rpm * DegreesPerRpmSecond * Time.deltaTime, 360f);
         if (wheel.Front)
-            wheel.Steer = Mathf.MoveTowards(wheel.Steer, drive.Steer, SteerPerSecond * Time.deltaTime);
+            wheel.Steer += (drive.Steer - wheel.Steer) * (1f - Mathf.Exp(-Time.deltaTime / SteerSeconds));
 
         // same as WheelAlign: the model gets the wheel collider's own rotation with steer and camber on top, and the spin goes on
         // wheelMesh under it, turned 180 on the right side. camber is the size from CarData, the side picks the sign
