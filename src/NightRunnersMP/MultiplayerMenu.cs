@@ -324,17 +324,7 @@ internal sealed class MultiplayerMenu
 
     private void BackToHaruna()
     {
-        if (_maps.Current is { Port: false })
-        {
-            _maps.Leave();
-            SetOpen(false);
-            return;
-        }
-        var pa = _teleports.FirstPa();
-        if (pa == null)
-            return;
         _maps.Leave();
-        _teleports.Go(pa);
         SetOpen(false);
     }
 

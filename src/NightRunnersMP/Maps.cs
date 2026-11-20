@@ -11,6 +11,7 @@ using BepInEx.Logging;
 using Cysharp.Threading.Tasks;
 using PlanetJem.Core.FloatingOrigin;
 using PlanetJem.Environment;
+using PlanetJem.Races;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -97,6 +98,7 @@ internal sealed class Maps
     private Vector3 _returnAbsolute;
     private Quaternion _returnRotation;
     private Teleports.Place _then;
+    private bool _there;
     private UniTask _stream;
     private float _streamUntil;
     private float _probeAt;
@@ -585,8 +587,15 @@ internal sealed class Maps
         FloatingOriginManager.Instance?.CacheShiftHandlers();
         Step("R3 map scenes unloaded");
         var position = _returnAbsolute - Origin;
-        MoveCar(position, _returnRotation);
-        Step($"R4 car back at {position}");
+        var rotation = _returnRotation;
+        _there = _then != null && _then.Pose(out position, out rotation);
+        if (!_there)
+        {
+            position = _returnAbsolute - Origin;
+            rotation = _returnRotation;
+        }
+        MoveCar(position, rotation);
+        Step(_there ? $"R4 car at {_then.Name}, {position}" : $"R4 car back at {position}");
         if (_haruna.Streamed)
         {
             MapChunkStreamer.BeginStreaming();
@@ -604,6 +613,8 @@ internal sealed class Maps
         if (_haruna.Streamed)
             Step(_stream.Status == UniTaskStatus.Pending ? "R5 chunks took too long, going anyway" : $"R5 chunks around the car are in ({_stream.Status})");
         _haruna.Clear();
+        if (_there)
+            SetDown();
         RestoreDriving();
         _loading.Release();
         _stage = Stage.Closing;
@@ -761,6 +772,18 @@ internal sealed class Maps
             body.angularVelocity = Vector3.zero;
         }
         Physics.SyncTransforms();
+    }
+
+    private void SetDown()
+    {
+        var place = _then;
+        _then = null;
+        if (_car == null)
+            return;
+        if (place.Pose(out var position, out var rotation))
+            MoveCar(position, rotation);
+        RaceCarPhysics.SnapOntoSurface(_car);
+        Step($"R5 car set down at {place.Name}, {_car.transform.position}");
     }
 
     private void RestoreDriving()
