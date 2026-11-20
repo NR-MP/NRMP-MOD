@@ -1,5 +1,6 @@
 using BepInEx;
 using BepInEx.Unity.IL2CPP;
+using HarmonyLib;
 using NightRunnersMP.Shared;
 
 namespace NightRunnersMP;
@@ -9,9 +10,9 @@ public class Plugin : BasePlugin
 {
     public const string Guid = "com.nightrunners.multiplayer";
     public const string Name = "Night Runners Multiplayer";
-    public const string Version = "0.1.4b2";
+    public const string Version = "0.1.5";
     // bepinex wants plain semver, the b doesn't parse
-    public const string SemVer = "0.1.4";
+    public const string SemVer = "0.1.5";
 
     public override void Load()
     {
@@ -28,10 +29,18 @@ public class Plugin : BasePlugin
 
         Traffic.Off = Config.Bind("Player", "TrafficOff", false, "No traffic on your screen, others still have theirs. Set in the game under F7, Settings.");
 
+        CarSignals.HornKey = Config.Bind("Player", "HornKey", UnityEngine.KeyCode.H, "Hold to honk, everyone near you hears it.");
+
         RemoteBuilds.Enabled = Config.Bind("Player", "FitPlayersParts", true, "Fit other players' parts to their cars. Not yet tried in the game.").Value;
 
         NetBehaviour.SpawnStop = Config.Bind("Player", "SpawnStop", GodConstant.MeetSpots_All.MH_IKAHO_PA,
             "Parking stop to start at when choosing Multiplayer.").Value;
+
+        var harmony = new Harmony(Guid);
+        Loading.Install(harmony);
+        OriginGuard.Install(harmony);
+        RemoteLights.Install(harmony);
+        ResetGuard.Install(harmony, Log);
 
         AddComponent<NetBehaviour>();
         Log.LogInfo($"{Name} {Version} loaded, server {NetBehaviour.Host}:{NetBehaviour.Port}");

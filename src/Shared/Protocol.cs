@@ -82,6 +82,13 @@ public enum MsgType : byte
     RaceJumped = 37,
     RaceRestage = 38,
     RaceEnded = 39,
+    TrafficHello = 40,
+    TrafficRole = 41,
+    TrafficSpawn = 42,
+    TrafficBatch = 43,
+    TrafficGone = 44,
+    Report = 45,
+    CrewColours = 46,
 }
 
 // stuff everyone should see, late joiners too. server stores and forwards blobs unread, new kind = no server change, no bump
@@ -92,6 +99,59 @@ public enum BlobKind : byte
     Map = 3,
     // a car hit for one player, everyone gets it and only they use it
     Hit = 4,
+    Hinges = 5,
+    Ping = 6,
+    Signals = 7,
+    Duel = 8,
+    // who i'm racing, empty when i'm not. spectators pick races from these
+    Race = 9,
+}
+
+public static class Signal
+{
+    public const byte Horn = 1;
+    public const byte Nos = 2;
+    // watching someone else's race, my car isn't where my last state says
+    public const byte Spectating = 4;
+}
+
+public enum DuelPhase : byte
+{
+    None,
+    Offer,
+    Accept,
+    Go,
+    Result,
+}
+
+// a flash to race out on the road. no server in it, both games read each other's blob. the challenger calls the go and the winner
+public struct DuelState
+{
+    public const int Size = 1 + 1 + 8 + 1;
+
+    public DuelPhase Phase;
+    public byte Rival;
+    // server clock ticks, each side moves it onto its own
+    public long GoAt;
+    public byte Winner;
+
+    public byte[] Write()
+    {
+        var w = new NetDataWriter();
+        w.Put((byte)Phase);
+        w.Put(Rival);
+        w.Put(GoAt);
+        w.Put(Winner);
+        return w.CopyData();
+    }
+
+    public static DuelState Read(byte[] blob)
+    {
+        if (blob == null || blob.Length < Size)
+            return default;
+        var r = new NetDataReader(blob);
+        return new DuelState { Phase = (DuelPhase)r.GetByte(), Rival = r.GetByte(), GoAt = r.GetLong(), Winner = r.GetByte() };
+    }
 }
 
 public enum RejectReason : byte
@@ -100,6 +160,8 @@ public enum RejectReason : byte
     VersionMismatch = 2,
     WrongKey = 3,
     ServerFull = 4,
+    NoRole = 5,
+    Banned = 6,
 }
 
 public struct ConnectRequest
@@ -153,6 +215,20 @@ public struct CarState
 
     public bool Solid => (Smoke & SolidBit) != 0;
 
+    public const byte LowBeamBit = 0x04;
+    public const byte HighBeamBit = 0x08;
+    public const byte BrakeBit = 0x10;
+    private const int IndicatorShift = 5;
+    private const byte IndicatorMask = 0x03;
+
+    public bool LowBeam => (Smoke & LowBeamBit) != 0;
+    public bool HighBeam => (Smoke & HighBeamBit) != 0;
+    public bool Braking => (Smoke & BrakeBit) != 0;
+    public int Indicators => (Smoke >> IndicatorShift) & IndicatorMask;
+
+    public static byte PackLights(bool lowBeam, bool highBeam, bool braking, int indicators) =>
+        (byte)((lowBeam ? LowBeamBit : 0) | (highBeam ? HighBeamBit : 0) | (braking ? BrakeBit : 0) | ((indicators & IndicatorMask) << IndicatorShift));
+
     public float FrontSlip => (Slip & 0x0F) / 15f;
     public float RearSlip => (Slip >> 4) / 15f;
 
@@ -192,6 +268,11 @@ public struct CarState
     {
         w.Put(TimeMs);
         w.Put(Scene);
+        WritePose(w);
+    }
+
+    public void WritePose(NetDataWriter w)
+    {
         w.Put(Position.X);
         w.Put(Position.Y);
         w.Put(Position.Z);
@@ -206,10 +287,18 @@ public struct CarState
 
     public static CarState Read(NetDataReader r)
     {
+        var timeMs = r.GetUInt();
+        var scene = r.GetUShort();
+        var s = ReadPose(r);
+        s.TimeMs = timeMs;
+        s.Scene = scene;
+        return s;
+    }
+
+    public static CarState ReadPose(NetDataReader r)
+    {
         var s = new CarState
         {
-            TimeMs = r.GetUInt(),
-            Scene = r.GetUShort(),
             Position = new Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat()),
         };
         var rotation = new Quaternion(r.GetShort() / 32767f, r.GetShort() / 32767f, r.GetShort() / 32767f, r.GetShort() / 32767f);

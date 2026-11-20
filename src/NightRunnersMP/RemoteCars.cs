@@ -18,6 +18,10 @@ internal sealed class Remote
     public RCC_CarControllerV3 Controller;
     public int SpawnedModel;
     public byte[] Paint;
+    public byte[] PaintedFrom;
+    public byte[] PaintedRead;
+    public GameObject PaintedCar;
+    public float RepaintAt;
     public byte[] Build;
     public byte[] BuildOn;
     public PlayerStats Stats;
@@ -44,6 +48,7 @@ internal sealed class Remote
     public int Fitted;
     public int Rebuilds;
     public float RebuiltAt;
+    public byte Hinges;
     public string WheelsSeen;
     public System.Action<GameObject> Built;
     public string MapId = "";
@@ -54,9 +59,23 @@ internal sealed class Remote
     public readonly List<WheelVisual> Wheels = new();
     public RCC_CarControllerV3 SoundCar;
     public float Revs;
+    public RCC_CarControllerV3 LightsCar;
+    public int HeadlightsSeen = -1;
     public byte[] LiveryFrom;
     public CarBuild.Job Livery;
     public GameObject LiveryCar;
+    public int Ping = -1;
+    public byte Signals;
+    public AudioSource Horn;
+    public GameObject HornCar;
+    public bool NosOn;
+    public DuelState Duel;
+    public byte RaceRival = Protocol.NoRacer;
+    public Color? CrewColour;
+
+    public bool Racing => RaceRival != Protocol.NoRacer;
+
+    public bool Spectating => (Signals & Signal.Spectating) != 0;
 
     // from the server's crew list. a bot's comes with its stats, a player's stats can say anything
     public string ServerCrew = "";
@@ -86,6 +105,8 @@ internal sealed class RemoteCars
 {
     private const float SpawnTimeoutSeconds = 60f;
     private const float RetrySeconds = 3f;
+    private const float SpawnGapSeconds = 1f;
+    private const float FailedSeconds = 120f;
     private const int MaxSpawnTries = 6;
     private const float HalfBuiltRange = 2f;
     private const string HitboxName = "NRMP hitbox";
@@ -96,7 +117,8 @@ internal sealed class RemoteCars
 
     private readonly ManualLogSource _log;
     private readonly Queue<Remote> _queue = new();
-    private readonly HashSet<int> _failedModels = new();
+    // model -> when it gets another try
+    private readonly Dictionary<int, float> _failedModels = new();
     private CarParent _parent;
     private Remote _current;
     private GameObject _spawnPoint;
@@ -104,6 +126,9 @@ internal sealed class RemoteCars
     private float _deadline;
     private float _retryAt;
     private int _wanted;
+    private float _spawnWorst;
+    private int _spawnFrames;
+    private float _spawnStart;
     private readonly List<(GameObject Part, int Layer)> _ownLayers = new();
 
     public System.Action<Remote> CarReady;
@@ -118,18 +143,25 @@ internal sealed class RemoteCars
 
     public void Request(Remote remote)
     {
-        if (remote.Model > 0 && !_queue.Contains(remote) && remote != _current)
+        if (remote.Model > 0 && !HasFailed(remote.Model) && !_queue.Contains(remote) && remote != _current)
             _queue.Enqueue(remote);
     }
 
     public void Tick(RCC_CarControllerV3 localCar, Vector3 fallbackSpawn, bool hold, meetSpot spot)
     {
         _game.Watch(localCar);
+        QuietLoad.Spawning = _current != null && localCar != null;
         if (_current != null)
         {
-            Poll(localCar);
-            if (_current == null)
-                _game.OursDone();
+            try
+            {
+                Poll(localCar);
+            }
+            finally
+            {
+                if (_current == null)
+                    _game.OursDone();
+            }
             return;
         }
         if (hold || localCar == null || _queue.Count == 0 || Time.unscaledTime < _retryAt)
@@ -142,7 +174,19 @@ internal sealed class RemoteCars
 
     public bool Busy => _current != null;
 
-    public bool HasFailed(int model) => _failedModels.Contains(model);
+    public bool HasFailed(int model)
+    {
+        if (!_failedModels.TryGetValue(model, out var until))
+            return false;
+        if (Time.unscaledTime < until)
+            return true;
+        _failedModels.Remove(model);
+        return false;
+    }
+
+    public void ClearFailures() => _failedModels.Clear();
+
+    private void Fail(int model) => _failedModels[model] = Time.unscaledTime + FailedSeconds;
 
     public void Forget(Remote remote)
     {
@@ -158,7 +202,7 @@ internal sealed class RemoteCars
 
     private void Begin(Remote remote, Vector3 fallbackSpawn)
     {
-        if (!remote.NeedsSpawn || _failedModels.Contains(remote.Model))
+        if (!remote.NeedsSpawn || HasFailed(remote.Model))
             return;
         _parent = Object.FindObjectOfType<CarParent>();
         if (_parent == null)
@@ -176,6 +220,10 @@ internal sealed class RemoteCars
         _current = remote;
         _wanted = remote.Model;
         _deadline = Time.unscaledTime + SpawnTimeoutSeconds;
+        _spawnWorst = 0f;
+        _spawnFrames = 0;
+        _spawnStart = Time.unscaledTime;
+        RemoteBuilds.HoldModel(remote.Model);
         _parent.StockCarSpawn_result = null;
         // CarApplicator refuses a body that got merged into one mesh. null_part spawned most of the shell missing, this is the garage's
         // own setup, whole car with the outside left in pieces. the inside stays merged, so interior parts stay stock for now
@@ -193,12 +241,14 @@ internal sealed class RemoteCars
     private void Poll(RCC_CarControllerV3 localCar)
     {
         var result = _parent != null ? _parent.StockCarSpawn_result : null;
+        _spawnFrames++;
+        _spawnWorst = Mathf.Max(_spawnWorst, Time.unscaledDeltaTime);
         if (result == null)
         {
             if (_parent != null && Time.unscaledTime < _deadline && !SpawnDied)
                 return;
             _log.LogError($"Spawning model {_current.Model} failed, keeping placeholder");
-            _failedModels.Add(_current.Model);
+            Fail(_current.Model);
             RestoreLocalPlayer(localCar);
             RemoveHalfBuilt(localCar);
             _current = null;
@@ -210,24 +260,28 @@ internal sealed class RemoteCars
         RestoreLocalPlayer(localCar);
         if (!IsWanted(result))
             return;
+        var start = SlowStep.Start();
         Forget(_current);
         // spawner parents it to whatever's around, that can get switched off when a race loads
         result.transform.SetParent(null);
         StartWheels(result);
         MakeGhost(result);
-        if (_current.Built != null)
+        // before the callbacks, a throw in one held the queue for the whole timeout
+        var done = _current;
+        _current = null;
+        _retryAt = Time.unscaledTime + SpawnGapSeconds;
+        if (done.Built != null)
         {
-            _current.Built(result);
-            _current = null;
+            done.Built(result);
             return;
         }
-        _current.Car = result;
-        _current.Controller = result.GetComponent<RCC_CarControllerV3>();
-        _current.SpawnedModel = _wanted;
-        _current.SpawnTries = 0;
-        _log.LogInfo($"Car ready for {_current.Name}");
-        CarReady?.Invoke(_current);
-        _current = null;
+        done.Car = result;
+        done.Controller = result.GetComponent<RCC_CarControllerV3>();
+        done.SpawnedModel = _wanted;
+        done.SpawnTries = 0;
+        _log.LogInfo($"Car ready for {done.Name}, the game took {_spawnFrames} frames and {Time.unscaledTime - _spawnStart:F1} s, worst {_spawnWorst * 1000f:F0} ms");
+        CarReady?.Invoke(done);
+        SlowStep.Stop(start, $"setting up {done.Name}'s car");
     }
 
     // state sits at the last yield while it runs, -1 once it's out. with no result that means it threw
@@ -259,7 +313,7 @@ internal sealed class RemoteCars
         if (++_current.SpawnTries >= MaxSpawnTries)
         {
             _log.LogError($"Giving up on model {_wanted}, keeping placeholder");
-            _failedModels.Add(_wanted);
+            Fail(_wanted);
         }
         _current = null;
         return false;
@@ -384,7 +438,7 @@ internal sealed class RemoteCars
     }
 
     // switched on all the way up to the car, the car itself can be off while it waits to spawn
-    private static bool OnUnder(Transform part, Transform root)
+    public static bool OnUnder(Transform part, Transform root)
     {
         for (var at = part; at != null && at != root; at = at.parent)
             if (!at.gameObject.activeSelf)

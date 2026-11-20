@@ -12,6 +12,7 @@ internal sealed class CrewState
 
     private readonly Action<CrewAction, string, byte> _send;
     private string _steamId = "";
+    private Dictionary<string, int> _colours = new();
 
     public List<CrewInfo> All { get; private set; } = None;
     public CrewInfo Mine { get; private set; }
@@ -20,6 +21,24 @@ internal sealed class CrewState
     public bool IsLeader => Mine != null && Mine.Members[0].SteamId == _steamId;
 
     public string Id => _steamId;
+
+    // only a server that sends colours can store one
+    public bool CanColour { get; private set; }
+
+    public int MyColour => Mine != null && _colours.TryGetValue(Mine.Name, out var colour) ? colour : 0;
+
+    public void ReadColours(NetDataReader reader)
+    {
+        _colours = CrewInfo.ReadColours(reader);
+        CanColour = true;
+    }
+
+    public UnityEngine.Color? ColourOf(string crew) =>
+        crew.Length > 0 && _colours.TryGetValue(crew, out var colour) && colour != 0 ? ToColor(colour) : null;
+
+    public static UnityEngine.Color ToColor(int rgb) => new(((rgb >> 16) & 255) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f, 1f);
+
+    public void SetColour(int rgb) => _send(CrewAction.Colour, rgb.ToString("X6"), 0);
 
     public CrewState(Action<CrewAction, string, byte> send)
     {

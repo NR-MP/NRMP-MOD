@@ -35,6 +35,8 @@ internal sealed class RaceCall
 
     private UIHintsDisplay _hints;
     private UIHintAction _hint;
+    private bool _cancelShown;
+    private bool _cancelKey;
     private Step _step;
     private PhoneController _phone;
     private PhoneController.CallRun _run;
@@ -88,6 +90,13 @@ internal sealed class RaceCall
                 _race.Answer(false);
             Close();
         }
+    }
+
+    // from OnGUI. the phone holds the game's own keys while it's up, so the keyboard gets a second way out
+    public void OnKey(KeyCode key)
+    {
+        if (key == KeyCode.Backspace && _step == Step.Waiting)
+            _cancelKey = true;
     }
 
     private void Idle(Parking parking, ushort scene, IEnumerable<Remote> remotes)
@@ -194,6 +203,15 @@ internal sealed class RaceCall
         }
         if (_step == Step.Ending)
             return;
+        if (_cancelShown && _step != Step.Waiting)
+            HideCancel();
+        if (_step == Step.Waiting && (_cancelKey || GameInput.Released(InputActionId.WalkBack)))
+        {
+            _log.LogInfo($"Backed out of the race with {RivalName}");
+            Decline();
+            return;
+        }
+        _cancelKey = false;
         if (_step == Step.Ringing && _run.PickedUp)
         {
             _step = Step.Talking;
@@ -410,6 +428,18 @@ internal sealed class RaceCall
             return;
         _step = Step.Waiting;
         _deadline = Time.unscaledTime + RingAndAnswerSeconds;
+        _cancelKey = false;
+        _cancelShown = true;
+        _hint = new UIHintAction("CANCEL", InputActionId.WalkBack, InputTrigger.Released);
+        ShowHint(Hints, _hint);
+    }
+
+    private void HideCancel()
+    {
+        _cancelShown = false;
+        _cancelKey = false;
+        _hint = null;
+        _hints?.Hide();
     }
 
     private void RivalLeft()
@@ -459,6 +489,8 @@ internal sealed class RaceCall
     private void Finish()
     {
         _step = Step.Idle;
+        if (_cancelShown)
+            HideCancel();
         ClosePrompt();
         if (_caller != null)
             _caller.aiRacer_characterName = _callerName;

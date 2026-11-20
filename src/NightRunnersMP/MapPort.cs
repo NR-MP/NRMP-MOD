@@ -22,7 +22,7 @@ internal sealed class MapPort
     private const string ChassisMod = "NightRunnersAllChassis.PowerFcGui";
     private const string GoingThere = "Going to C1";
     private const string GoingBack = "Going to Ikaho";
-    private const string LoadingNotice = "Map is loading, can't teleport at this moment. Wait a bit";
+    internal const string LoadingNotice = "Map is loading, can't teleport at this moment. Wait a bit";
     private const BindingFlags Statics = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
 
     private readonly ManualLogSource _log;

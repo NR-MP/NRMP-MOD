@@ -16,6 +16,26 @@ internal static class CarPaint
         return w.CopyData();
     }
 
+    public static bool Valid(byte[] paint)
+    {
+        if (paint == null)
+            return false;
+        var r = new NetDataReader(paint);
+        for (var i = 0; i < 4; i++)
+        {
+            if (!r.TryGetBool(out var has))
+                return false;
+            if (!has)
+                continue;
+            for (var f = 0; f < 8; f++)
+                if (!r.TryGetFloat(out var value) || !float.IsFinite(value))
+                    return false;
+            if (!r.TryGetInt(out var type) || !System.Enum.IsDefined(typeof(GodConstant.PaintTypeCar), (GodConstant.PaintTypeCar)type))
+                return false;
+        }
+        return r.EndOfData;
+    }
+
     // same order as CarApplicator.TryApplyPaint. no material for a paint = leave it unset
     public static void Apply(GodConstant god, CarLocalCustom car, byte[] paint)
     {

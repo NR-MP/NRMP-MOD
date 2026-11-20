@@ -11,6 +11,7 @@ public enum CrewAction : byte
     Decline = 4,
     Leave = 5,
     Kick = 6,
+    Colour = 7,
 }
 
 public sealed class CrewMember
@@ -28,6 +29,29 @@ public sealed class CrewInfo
     public string Name = "";
     public List<CrewMember> Members = new();
     public List<string> Invited = new();
+    // 0xRRGGBB, 0 = none picked. not in the list message, older mods read that
+    public int Colour;
+
+    public static void WriteColours(NetDataWriter w, List<CrewInfo> crews)
+    {
+        w.Put((ushort)crews.Count);
+        foreach (var crew in crews)
+        {
+            w.Put(crew.Name);
+            w.Put(crew.Colour);
+        }
+    }
+
+    public static Dictionary<string, int> ReadColours(NetDataReader r)
+    {
+        var colours = new Dictionary<string, int>();
+        for (var c = r.GetUShort(); c > 0; c--)
+            colours[r.GetString()] = r.GetInt() & 0xFFFFFF;
+        return colours;
+    }
+
+    public static bool TryParseColour(string hex, out int colour) =>
+        int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out colour) && hex.Length == 6 && colour >= 0;
 
     public static void WriteList(NetDataWriter w, List<CrewInfo> crews)
     {

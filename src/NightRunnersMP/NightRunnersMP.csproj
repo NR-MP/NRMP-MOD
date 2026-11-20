@@ -22,6 +22,7 @@
     <Reference Include="$(GameDir)\BepInEx\core\BepInEx.Core.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\core\BepInEx.Unity.IL2CPP.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\core\Il2CppInterop.Runtime.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\core\0Harmony.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\Il2Cppmscorlib.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\Assembly-CSharp.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\Assembly-CSharp-firstpass.dll" Private="false" />
@@ -36,12 +37,14 @@
     <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.AnimationModule.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.TextRenderingModule.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.PhysicsModule.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.TerrainModule.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.ParticleSystemModule.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.VehiclesModule.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.UI.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\UnityEngine.UIModule.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\Rewired_Core.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\Vendor.AzureSky.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\interop\Unity.Postprocessing.Runtime.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\Unity.Addressables.dll" Private="false" />
     <Reference Include="$(GameDir)\BepInEx\interop\Unity.ResourceManager.dll" Private="false" />
   </ItemGroup>

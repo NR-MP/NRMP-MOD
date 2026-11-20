@@ -125,6 +125,7 @@ internal sealed class PlayerRace
     public bool CanCounter => _counters < Protocol.MaxRaceCounters;
     public string RivalName => _rival?.Tag ?? "";
     public byte RivalId => _rival?.Id ?? 0;
+    public byte Opponent => Racing && _rival != null && !_rival.IsBot ? _rival.Id : Protocol.NoRacer;
     public string RaceName => Array.Find(Races, r => r.Id == _raceId).Name ?? "";
     public int Wager => _wager;
     public int Money => GodConstant.Instance != null ? GodConstant.Instance.player_Money : 0;
@@ -161,7 +162,7 @@ internal sealed class PlayerRace
             w.Put(raceId);
             w.Put(wager);
         });
-        _notice($"Challenge sent to {rival.Tag}");
+        _notice($"Challenge sent to {rival.Tag}, Backspace takes it back");
     }
 
     public void OnOffer(NetDataReader reader, byte myId)

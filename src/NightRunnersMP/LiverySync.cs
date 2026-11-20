@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Threading.Tasks;
 using BepInEx.Logging;
 using LiteNetLib.Utils;
 using NightRunnersMP.Shared;
@@ -11,15 +15,18 @@ using UnityEngine;
 namespace NightRunnersMP;
 
 // liveries are image files on the owner's pc, so the build only names them by hash and the bytes go through the server once.
-// kept in a folder of my own by hash, same image never downloads twice. a file only counts once its hash checks out
+// kept sealed in a folder of my own by hash, same image never downloads twice. a file only counts once its hash checks out
 internal sealed class LiverySync
 {
     private const float PartSeconds = 0.1f;
     private const float AskSeconds = 5f;
+    private const float PruneSeconds = 10f;
+    private const float UnusedSeconds = 300f;
     // real liveries are 2048 or 4096, a small file can still unpack into gigabytes past this
     private const int MaxSide = 4096;
+    private const int ProbeSide = 4;
 
-    private static readonly HashSet<string> Mine = new();
+    private static readonly Dictionary<string, string> Mine = new();
 
     private readonly ManualLogSource _log;
     private readonly Action<Action<NetDataWriter>> _send;
@@ -28,6 +35,22 @@ internal sealed class LiverySync
     private readonly Dictionary<string, int> _received = new();
     private readonly Dictionary<string, float> _asked = new();
     private readonly Dictionary<string, Texture2D> _textures = new();
+    private readonly HashSet<string> _unreadable = new();
+    private bool _decoded;
+    private readonly HashSet<string> _decoding = new();
+    private readonly ConcurrentQueue<(string Hash, bool Linear, byte[] Pixels, int Width, int Height, int Channels)> _ready = new();
+    private readonly ConcurrentQueue<(string Hash, int Total, byte[] Data)> _hard = new();
+    private readonly Shape[] _shapes = new Shape[2];
+    private readonly Dictionary<Remote, (GameObject Car, string Main, string Mask)> _worn = new();
+    private readonly HashSet<string> _inUse = new();
+    private readonly List<string> _unused = new();
+    private readonly Dictionary<string, float> _unusedSince = new();
+    private readonly List<Remote> _gone = new();
+    private readonly HashSet<string> _cleaning = new();
+    private readonly ConcurrentQueue<(string Hash, int Total, int Length, string Error)> _cleaned = new();
+    private float _pruneAt;
+    private bool _swept;
+    private Task<string> _sealing;
     private readonly HashSet<string> _have = new();
     private readonly HashSet<string> _uploaded = new();
     private string _uploading;
@@ -55,9 +78,9 @@ internal sealed class LiverySync
         }
     }
 
-    private static string PathOf(string hash) => Path.Combine(Folder, hash + ".png");
+    private static string PathOf(string hash) => Path.Combine(Folder, hash + LiveryVault.Extension);
 
-    // copy of my own livery in the folder, gives back its hash. null = nothing to send
+    // my own livery stays where the game keeps it, gives back its hash. null = nothing to send
     public static string Keep(string path)
     {
         if (string.IsNullOrEmpty(path))
@@ -79,10 +102,7 @@ internal sealed class LiverySync
             return null;
         }
         var hash = Hash(data);
-        var kept = PathOf(hash);
-        if (!File.Exists(kept))
-            File.WriteAllBytes(kept, data);
-        Mine.Add(hash);
+        Mine[hash] = path;
         return hash;
     }
 
@@ -95,40 +115,151 @@ internal sealed class LiverySync
         _partial.Clear();
         _received.Clear();
         _asked.Clear();
+        _unreadable.Clear();
         _uploading = null;
     }
 
     public void Tick(IEnumerable<Remote> remotes, bool hold)
     {
+        Sweep();
         Upload();
-        if (hold)
-            return;
-        foreach (var remote in remotes)
+        Cleaned();
+        _decoded = false;
+        if (!hold)
         {
-            try
+            Ready();
+            Hard();
+            foreach (var remote in remotes)
             {
-                Follow(remote);
-            }
-            catch (Exception e)
-            {
-                _log.LogWarning($"Livery of {remote.Name} failed: {e.Message}");
-                remote.LiveryCar = remote.Car;
+                try
+                {
+                    Follow(remote);
+                }
+                catch (Exception e)
+                {
+                    _log.LogWarning($"Livery of {remote.Name} failed: {e.Message}");
+                    remote.LiveryCar = remote.Car;
+                }
             }
         }
+        Prune(remotes);
+    }
+
+    // folders from before the vault still hold plain pngs, those get sealed once and nothing is asked for until that's done
+    private void Sweep()
+    {
+        if (!_swept)
+        {
+            _swept = true;
+            var folder = Folder;
+            _sealing = Task.Run(() => SealOld(folder));
+        }
+        else if (_sealing != null && _sealing.IsCompleted)
+        {
+            if (_sealing.Result != null)
+                _log.LogInfo(_sealing.Result);
+            _sealing = null;
+        }
+    }
+
+    private static string SealOld(string folder)
+    {
+        var count = 0;
+        try
+        {
+            foreach (var path in Directory.GetFiles(folder, "*.png"))
+            {
+                var hash = Path.GetFileNameWithoutExtension(path);
+                var to = Path.Combine(folder, hash + LiveryVault.Extension);
+                if (IsHash(hash) && !File.Exists(to))
+                {
+                    var data = File.ReadAllBytes(path);
+                    if (IsPicture(data, out _))
+                    {
+                        LiveryVault.Write(to, hash, data);
+                        count++;
+                    }
+                }
+                File.Delete(path);
+            }
+            foreach (var path in Directory.GetFiles(folder, "*.part"))
+                File.Delete(path);
+        }
+        catch (Exception e)
+        {
+            return $"Sealing old liveries stopped after {count}: {e.Message}";
+        }
+        return count > 0 ? $"Sealed {count} old livery files" : null;
+    }
+
+    private static bool IsHash(string name)
+    {
+        if (name.Length != 2 * Protocol.LiveryHashBytes)
+            return false;
+        foreach (var letter in name)
+            if (!Uri.IsHexDigit(letter))
+                return false;
+        return true;
+    }
+
+    // a car keeps wearing its livery after the build drops it, so a texture stays until that car is gone
+    private void Prune(IEnumerable<Remote> remotes)
+    {
+        if (Time.unscaledTime < _pruneAt)
+            return;
+        _pruneAt = Time.unscaledTime + PruneSeconds;
+        _inUse.Clear();
+        foreach (var remote in remotes)
+        {
+            if (!_worn.TryGetValue(remote, out var worn) || worn.Car == null || worn.Car != remote.Car)
+                continue;
+            _inUse.Add(worn.Main);
+            if (worn.Mask != null)
+                _inUse.Add(worn.Mask);
+        }
+        foreach (var pair in _worn)
+            if (pair.Value.Car == null || pair.Value.Car != pair.Key.Car)
+                _gone.Add(pair.Key);
+        foreach (var remote in _gone)
+            _worn.Remove(remote);
+        _gone.Clear();
+        var now = Time.unscaledTime;
+        foreach (var key in _textures.Keys)
+        {
+            if (_inUse.Contains(key))
+                _unusedSince.Remove(key);
+            else if (!_unusedSince.TryGetValue(key, out var since))
+                _unusedSince[key] = now;
+            else if (now - since >= UnusedSeconds)
+                _unused.Add(key);
+        }
+        foreach (var key in _unused)
+        {
+            var texture = _textures[key];
+            _textures.Remove(key);
+            _unusedSince.Remove(key);
+            if (texture != null)
+                UnityEngine.Object.Destroy(texture);
+        }
+        _unused.Clear();
     }
 
     private void Upload()
     {
         if (_uploading == null)
         {
-            foreach (var hash in Mine)
+            foreach (var mine in Mine)
             {
-                if (!_uploaded.Add(hash))
+                if (!_uploaded.Add(mine.Key))
                     continue;
-                _uploading = hash;
-                _uploadData = File.ReadAllBytes(PathOf(hash));
+                // the file can change after Keep, the next build then names the new one
+                var file = File.Exists(mine.Value) ? File.ReadAllBytes(mine.Value) : null;
+                if (file == null || Hash(file) != mine.Key)
+                    continue;
+                _uploading = mine.Key;
+                _uploadData = file;
                 _uploadOffset = 0;
-                _log.LogInfo($"Sending livery {hash}, {_uploadData.Length} bytes");
+                _log.LogInfo($"Sending livery {_uploading}, {_uploadData.Length} bytes");
                 break;
             }
         }
@@ -169,11 +300,16 @@ internal sealed class LiverySync
         var car = remote.Car.GetComponentInChildren<CarLocalCustom>(true);
         if (car == null)
             return;
+        // decoding is the slow part, so one image a frame and the car waits for both
+        if (!Decoded(job.LiveryMain, false) || (job.LiveryMask != null && !Decoded(job.LiveryMask, true)))
+            return;
         remote.LiveryCar = remote.Car;
         var main = Load(job.LiveryMain, false);
         if (main == null)
             return;
-        car.SetLiveryDecal(main, job.LiveryFinish, job.LiveryMask != null ? Load(job.LiveryMask, true) : null);
+        var mask = job.LiveryMask != null ? Load(job.LiveryMask, true) : null;
+        car.SetLiveryDecal(main, job.LiveryFinish, mask);
+        _worn[remote] = (remote.Car, Key(job.LiveryMain, false), mask != null ? Key(job.LiveryMask, true) : null);
         _log.LogInfo($"Livery on {remote.Name}'s car");
     }
 
@@ -182,12 +318,14 @@ internal sealed class LiverySync
     {
         if (_have.Contains(hash))
             return true;
+        if (_sealing != null)
+            return false;
         if (File.Exists(PathOf(hash)))
         {
             _have.Add(hash);
             return true;
         }
-        if (!_partial.ContainsKey(hash) && (!_asked.TryGetValue(hash, out var at) || Time.unscaledTime >= at))
+        if (!_partial.ContainsKey(hash) && !_cleaning.Contains(hash) && (!_asked.TryGetValue(hash, out var at) || Time.unscaledTime >= at))
         {
             _asked[hash] = Time.unscaledTime + AskSeconds;
             var bytes = Convert.FromHexString(hash);
@@ -200,23 +338,174 @@ internal sealed class LiverySync
         return false;
     }
 
+    private static string Key(string hash, bool linear) => linear ? hash + "/linear" : hash;
+
+    private bool Decoded(string hash, bool linear)
+    {
+        var key = Key(hash, linear);
+        if (_unreadable.Contains(key) || (_textures.TryGetValue(key, out var known) && known != null))
+            return true;
+        if (_decoding.Count > 0)
+            return false;
+        var shape = ShapeOf(linear);
+        if (shape == null)
+        {
+            if (_decoded)
+                return false;
+            _decoded = true;
+            if (Load(hash, linear) == null)
+                _unreadable.Add(key);
+            return false;
+        }
+        _decoding.Add(key);
+        var path = PathOf(hash);
+        var mips = shape.Mips;
+        Task.Run(() =>
+        {
+            byte[] pixels = null;
+            int width = 0, height = 0, channels = 0;
+            try
+            {
+                var data = LiveryVault.Read(path, hash);
+                if (data != null)
+                    pixels = PngPixels.Read(data, mips, out width, out height, out channels);
+            }
+            catch (Exception)
+            {
+            }
+            _ready.Enqueue((hash, linear, pixels, width, height, channels));
+        });
+        return false;
+    }
+
+    private void Ready()
+    {
+        if (!_ready.TryDequeue(out var done))
+            return;
+        var key = Key(done.Hash, done.Linear);
+        _decoding.Remove(key);
+        _decoded = true;
+        var texture = done.Pixels != null ? Build(done.Hash, done.Pixels, done.Width, done.Height, done.Channels, done.Linear) : null;
+        if (texture != null)
+            _textures[key] = texture;
+        else if (Load(done.Hash, done.Linear) == null)
+            _unreadable.Add(key);
+    }
+
+    private Texture2D Build(string hash, byte[] pixels, int width, int height, int channels, bool linear)
+    {
+        var shape = ShapeOf(linear);
+        if (shape == null)
+            return null;
+        var start = SlowStep.Start();
+        var texture = new Texture2D(width, height, channels == 4 ? TextureFormat.RGBA32 : TextureFormat.RGB24, shape.Mips, linear);
+        if (pixels.Length != PngPixels.Size(width, height, channels, texture.mipmapCount))
+        {
+            UnityEngine.Object.Destroy(texture);
+            return null;
+        }
+        texture.wrapMode = shape.Wrap;
+        texture.filterMode = shape.Filter;
+        texture.anisoLevel = shape.Aniso;
+        texture.mipMapBias = shape.Bias;
+        var pin = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+        try
+        {
+            texture.LoadRawTextureData(pin.AddrOfPinnedObject(), pixels.Length);
+        }
+        finally
+        {
+            pin.Free();
+        }
+        texture.Apply(false, !shape.Readable);
+        SlowStep.Stop(start, $"building livery {hash}");
+        return texture;
+    }
+
+    private sealed class Shape
+    {
+        public bool Usable;
+        public bool Mips;
+        public bool Readable;
+        public TextureWrapMode Wrap;
+        public FilterMode Filter;
+        public int Aniso;
+        public float Bias;
+    }
+
+    // a tiny png goes through the game's loader once, mine then come out set up the same way. null = only the game's loader will do
+    private Shape ShapeOf(bool linear)
+    {
+        var shape = _shapes[linear ? 1 : 0];
+        if (shape == null)
+        {
+            shape = new Shape();
+            _shapes[linear ? 1 : 0] = shape;
+            try
+            {
+                var path = Path.Combine(Folder, "probe.png");
+                File.WriteAllBytes(path, Png(new byte[ProbeSide * ProbeSide * 4], ProbeSide, ProbeSide, 4));
+                var texture = LiveryStore.LoadTexture(path, out var status, linear);
+                File.Delete(path);
+                if (texture == null)
+                {
+                    _log.LogWarning($"The game's livery loader gave nothing for the probe: {status}");
+                }
+                else
+                {
+                    shape.Mips = texture.mipmapCount > 1;
+                    shape.Readable = texture.isReadable;
+                    shape.Wrap = texture.wrapMode;
+                    shape.Filter = texture.filterMode;
+                    shape.Aniso = texture.anisoLevel;
+                    shape.Bias = texture.mipMapBias;
+                    shape.Usable = texture.format == TextureFormat.RGBA32 && texture.width == ProbeSide && texture.height == ProbeSide;
+                    _log.LogInfo($"The game makes {(linear ? "mask" : "livery")} textures {texture.format} {texture.width}x{texture.height}, {texture.mipmapCount} mips, {shape.Wrap}, {shape.Filter}, aniso {shape.Aniso}, readable {shape.Readable}{(shape.Usable ? "" : ", so its own loader stays in use")}");
+                    UnityEngine.Object.Destroy(texture);
+                }
+            }
+            catch (Exception e)
+            {
+                _log.LogWarning($"Livery probe failed: {e.Message}");
+            }
+        }
+        return shape.Usable ? shape : null;
+    }
+
     private Texture2D Load(string hash, bool linear)
     {
-        if (_textures.TryGetValue(hash, out var known) && known != null)
+        if (_textures.TryGetValue(Key(hash, linear), out var known) && known != null)
             return known;
-        // checked again here, the folder could have files from before the check existed
-        if (!File.Exists(PathOf(hash)))
+        if (_unreadable.Contains(Key(hash, linear)))
             return null;
-        if (!IsPicture(File.ReadAllBytes(PathOf(hash)), out var why))
+        var data = LiveryVault.Read(PathOf(hash), hash);
+        if (data == null)
+            return null;
+        // checked again here, the folder could have files from before the check existed
+        if (!IsPicture(data, out var why))
         {
             _log.LogWarning($"Livery {hash} won't load, {why}");
             return null;
         }
-        var texture = LiveryStore.LoadTexture(PathOf(hash), out var status, linear);
+        var start = SlowStep.Start();
+        // the game's loader only takes a file, so it gets a plain one for as long as the load takes
+        var plain = Path.Combine(Folder, hash + "-load.png");
+        Texture2D texture;
+        LiveryLoadStatus status;
+        File.WriteAllBytes(plain, data);
+        try
+        {
+            texture = LiveryStore.LoadTexture(plain, out status, linear);
+        }
+        finally
+        {
+            File.Delete(plain);
+        }
+        SlowStep.Stop(start, $"loading livery {hash}");
         if (texture == null)
             _log.LogWarning($"Livery {hash} won't load: {status}");
         else
-            _textures[hash] = texture;
+            _textures[Key(hash, linear)] = texture;
         return texture;
     }
 
@@ -231,7 +520,7 @@ internal sealed class LiverySync
         var offset = reader.GetInt();
         var count = reader.AvailableBytes;
         // only ones i asked for, nobody gets to fill my memory or folder
-        if (!_asked.ContainsKey(hash) || _have.Contains(hash))
+        if (!_asked.ContainsKey(hash) || _have.Contains(hash) || _cleaning.Contains(hash))
             return;
         if (total <= 0 || total > Protocol.MaxLiveryBytes || offset < 0 || count > total - offset)
             return;
@@ -260,27 +549,91 @@ internal sealed class LiverySync
             _log.LogWarning($"Livery {hash} thrown away, {why}");
             return;
         }
-        var clean = Clean(data);
-        if (clean == null)
+        _cleaning.Add(hash);
+        var path = PathOf(hash);
+        Task.Run(() =>
         {
-            _have.Add(hash);
-            _log.LogWarning($"Livery {hash} thrown away, it isn't a picture unity can read");
-            return;
-        }
-        File.WriteAllBytes(PathOf(hash), clean);
-        _log.LogInfo($"Livery {hash} downloaded, {total} bytes, kept as a clean {clean.Length} byte png");
+            var pixels = PngPixels.Read(data, false, out var width, out var height, out var channels);
+            if (pixels == null)
+                _hard.Enqueue((hash, total, data));
+            else
+                Save(hash, total, path, pixels, width, height, channels);
+        });
     }
 
-    // pixels only, into a brand new png. whatever else was tucked in the file stays behind. a hitch on a big one, once per livery
-    private static byte[] Clean(byte[] data)
+    // jpgs and odd pngs, only unity reads those and only on the game thread
+    private void Hard()
     {
+        if (_decoded || !_hard.TryDequeue(out var job))
+            return;
+        _decoded = true;
+        var start = SlowStep.Start();
+        var pixels = Pixels(job.Data, out var width, out var height, out var channels);
+        SlowStep.Stop(start, $"reading livery {job.Hash}");
+        if (pixels == null)
+        {
+            _cleaning.Remove(job.Hash);
+            _have.Add(job.Hash);
+            _log.LogWarning($"Livery {job.Hash} thrown away, it isn't a picture unity can read");
+            return;
+        }
+        var path = PathOf(job.Hash);
+        Task.Run(() => Save(job.Hash, job.Total, path, pixels, width, height, channels));
+    }
+
+    private void Save(string hash, int total, string path, byte[] pixels, int width, int height, int channels)
+    {
+        try
+        {
+            var clean = Png(pixels, width, height, channels);
+            LiveryVault.Write(path, hash, clean);
+            _cleaned.Enqueue((hash, total, clean.Length, null));
+        }
+        catch (Exception e)
+        {
+            _cleaned.Enqueue((hash, total, 0, e.Message));
+        }
+    }
+
+    private void Cleaned()
+    {
+        while (_cleaned.TryDequeue(out var done))
+        {
+            _cleaning.Remove(done.Hash);
+            if (done.Error != null)
+            {
+                _have.Add(done.Hash);
+                _log.LogWarning($"Livery {done.Hash} thrown away, saving it failed: {done.Error}");
+            }
+            else
+            {
+                _log.LogInfo($"Livery {done.Hash} downloaded, {done.Total} bytes, kept sealed as a clean {done.Length} byte png");
+            }
+        }
+    }
+
+    // pixels only, into a brand new png. whatever else was tucked in the file stays behind
+    private static byte[] Pixels(byte[] data, out int width, out int height, out int channels)
+    {
+        width = height = channels = 0;
         var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false) { hideFlags = HideFlags.HideAndDontSave };
         try
         {
             if (!ImageConversion.LoadImage(texture, data))
                 return null;
-            byte[] png = ImageConversion.EncodeToPNG(texture);
-            return png != null && png.Length > 0 ? png : null;
+            width = texture.width;
+            height = texture.height;
+            var format = texture.format;
+            channels = format == TextureFormat.RGB24 ? 3 : 4;
+            if (format is TextureFormat.RGBA32 or TextureFormat.RGB24)
+            {
+                var raw = texture.GetRawTextureData();
+                if (raw != null && raw.Length >= width * height * channels)
+                    return Copy(raw.Pointer, width * height * channels);
+            }
+            channels = 4;
+            var colors = texture.GetPixels32();
+            return colors != null && colors.Length == width * height ? Copy(colors.Pointer, width * height * 4) : null;
         }
         finally
         {
@@ -288,8 +641,89 @@ internal sealed class LiverySync
         }
     }
 
+    // past the il2cpp array header
+    private static byte[] Copy(IntPtr array, int size)
+    {
+        var bytes = new byte[size];
+        Marshal.Copy(array + 4 * IntPtr.Size, bytes, 0, size);
+        return bytes;
+    }
+
+    // unity's rows go bottom up
+    private static byte[] Png(byte[] pixels, int width, int height, int channels)
+    {
+        var stride = width * channels;
+        var packed = new MemoryStream();
+        using (var zlib = new ZLibStream(packed, System.IO.Compression.CompressionLevel.Fastest, true))
+        {
+            var row = new byte[stride + 1];
+            row[0] = 1;
+            for (var y = height - 1; y >= 0; y--)
+            {
+                var at = y * stride;
+                for (var x = 0; x < stride; x++)
+                    row[x + 1] = (byte)(pixels[at + x] - (x >= channels ? pixels[at + x - channels] : 0));
+                zlib.Write(row, 0, row.Length);
+            }
+        }
+        var png = new MemoryStream();
+        png.Write(new byte[] { 0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A });
+        var header = new byte[13];
+        PutBigEndian(header, 0, width);
+        PutBigEndian(header, 4, height);
+        header[8] = 8;
+        header[9] = (byte)(channels == 4 ? 6 : 2);
+        Chunk(png, "IHDR", header, header.Length);
+        Chunk(png, "IDAT", packed.GetBuffer(), (int)packed.Length);
+        Chunk(png, "IEND", Array.Empty<byte>(), 0);
+        return png.ToArray();
+    }
+
+    private static void Chunk(Stream to, string type, byte[] data, int length)
+    {
+        var head = new byte[8];
+        PutBigEndian(head, 0, length);
+        for (var i = 0; i < 4; i++)
+            head[4 + i] = (byte)type[i];
+        to.Write(head, 0, 8);
+        to.Write(data, 0, length);
+        var tail = new byte[4];
+        PutBigEndian(tail, 0, (int)(Crc(Crc(0xFFFFFFFFu, head, 4, 4), data, 0, length) ^ 0xFFFFFFFFu));
+        to.Write(tail, 0, 4);
+    }
+
+    private static readonly uint[] CrcTable = MakeCrcTable();
+
+    private static uint[] MakeCrcTable()
+    {
+        var table = new uint[256];
+        for (uint n = 0; n < 256; n++)
+        {
+            var c = n;
+            for (var k = 0; k < 8; k++)
+                c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[n] = c;
+        }
+        return table;
+    }
+
+    private static uint Crc(uint crc, byte[] data, int offset, int length)
+    {
+        for (var i = offset; i < offset + length; i++)
+            crc = CrcTable[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+        return crc;
+    }
+
+    private static void PutBigEndian(byte[] data, int at, int value)
+    {
+        data[at] = (byte)(value >> 24);
+        data[at + 1] = (byte)(value >> 16);
+        data[at + 2] = (byte)(value >> 8);
+        data[at + 3] = (byte)value;
+    }
+
     // only a png or jpg, and only up to MaxSide. sizes come from the header, nothing gets unpacked to find out.
-    // the bytes only ever go to unity's image decoder and get saved as .png in my folder under their hash, nothing runs them
+    // the bytes only ever go to an image decoder and get saved sealed in my folder under their hash, nothing runs them
     public static bool IsPicture(byte[] data, out string why)
     {
         int width, height;

@@ -71,6 +71,8 @@ internal sealed class CarHits
     private readonly Dictionary<byte, Seen> _seen = new();
     private readonly List<byte> _done = new();
     private GameObject _boxCar;
+    private RCC_CarControllerV3 _bodyCar;
+    private Rigidbody _body;
     private Bounds _box;
     private bool _hasBox;
 
@@ -83,7 +85,12 @@ internal sealed class CarHits
     // every physics step. parked = sat in a meet space, not where they really are, so a wall that never gets told
     public void FixedTick(RCC_CarControllerV3 car, IEnumerable<Remote> remotes, Func<Remote, bool> parked)
     {
-        var body = car != null ? car.GetComponent<Rigidbody>() : null;
+        if (car != _bodyCar)
+        {
+            _bodyCar = car;
+            _body = car != null ? car.GetComponent<Rigidbody>() : null;
+        }
+        var body = _body;
         if (body == null || body.isKinematic)
             return;
         if (car.gameObject != _boxCar)
