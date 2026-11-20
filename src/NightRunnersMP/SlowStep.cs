@@ -9,9 +9,11 @@ internal static class SlowStep
 
     public static long Start() => Stopwatch.GetTimestamp();
 
+    public static double Ms(long start) => (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
+
     public static void Stop(long start, string what)
     {
-        var ms = (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
+        var ms = Ms(start);
         if (ms >= LogMs)
             NetBehaviour.Log.LogWarning($"Slow: {what} took {ms:F0} ms");
     }

@@ -21,6 +21,7 @@ internal sealed class Remote
     public byte[] PaintedFrom;
     public byte[] PaintedRead;
     public GameObject PaintedCar;
+    public float RepaintAt;
     public byte[] Build;
     public byte[] BuildOn;
     public PlayerStats Stats;
@@ -115,6 +116,7 @@ internal sealed class RemoteCars
     private int _wanted;
     private float _spawnWorst;
     private int _spawnFrames;
+    private float _spawnStart;
     private readonly List<(GameObject Part, int Layer)> _ownLayers = new();
 
     public System.Action<Remote> CarReady;
@@ -136,6 +138,7 @@ internal sealed class RemoteCars
     public void Tick(RCC_CarControllerV3 localCar, Vector3 fallbackSpawn, bool hold, meetSpot spot)
     {
         _game.Watch(localCar);
+        QuietLoad.Spawning = _current != null && localCar != null;
         if (_current != null)
         {
             try
@@ -207,6 +210,8 @@ internal sealed class RemoteCars
         _deadline = Time.unscaledTime + SpawnTimeoutSeconds;
         _spawnWorst = 0f;
         _spawnFrames = 0;
+        _spawnStart = Time.unscaledTime;
+        RemoteBuilds.HoldModel(remote.Model);
         _parent.StockCarSpawn_result = null;
         // CarApplicator refuses a body that got merged into one mesh. null_part spawned most of the shell missing, this is the garage's
         // own setup, whole car with the outside left in pieces. the inside stays merged, so interior parts stay stock for now
@@ -262,7 +267,7 @@ internal sealed class RemoteCars
         done.Controller = result.GetComponent<RCC_CarControllerV3>();
         done.SpawnedModel = _wanted;
         done.SpawnTries = 0;
-        _log.LogInfo($"Car ready for {done.Name}, the game took {_spawnFrames} frames, worst {_spawnWorst * 1000f:F0} ms");
+        _log.LogInfo($"Car ready for {done.Name}, the game took {_spawnFrames} frames and {Time.unscaledTime - _spawnStart:F1} s, worst {_spawnWorst * 1000f:F0} ms");
         CarReady?.Invoke(done);
         SlowStep.Stop(start, $"setting up {done.Name}'s car");
     }
@@ -421,7 +426,7 @@ internal sealed class RemoteCars
     }
 
     // switched on all the way up to the car, the car itself can be off while it waits to spawn
-    private static bool OnUnder(Transform part, Transform root)
+    public static bool OnUnder(Transform part, Transform root)
     {
         for (var at = part; at != null && at != root; at = at.parent)
             if (!at.gameObject.activeSelf)

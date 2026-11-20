@@ -201,6 +201,8 @@ internal sealed class RemoteBuilds
     private const float WatchSeconds = 1f;
     private const float MinWhole = 0.8f;
     private const int MaxRebuilds = 2;
+    private const double SkipBudgetMs = 2;
+    private const int GoneListed = 8;
     // a car that stayed whole this long after its last rebuild lost parts to something new (garage, loading screen), not a loop
     private const float RebuildFreshSeconds = 60f;
     private static readonly HashSet<string> HeldCatalogs = new();
@@ -242,6 +244,7 @@ internal sealed class RemoteBuilds
 
     public void Tick(bool hold)
     {
+        QuietLoad.Fitting = !hold && _remote != null && !_catalogDone;
         // waiting in the garage isn't the catalog being slow
         if (hold)
         {
@@ -306,20 +309,27 @@ internal sealed class RemoteBuilds
         var name = _remote.Name;
         if (_step < parts)
         {
-            Fit(car, _job.Parts[_step]);
-            SlowStep.Stop(start, $"fitting {_job.Parts[_step].PartType} on {name}'s car");
+            // a part the game turns down costs nothing, those don't get a frame each
+            var fitted = false;
+            while (!fitted && _step < parts && SlowStep.Ms(start) < SkipBudgetMs)
+            {
+                var part = _job.Parts[_step++];
+                fitted = Fit(car, part);
+                SlowStep.Stop(start, $"fitting {part.PartType} on {name}'s car");
+            }
+            return;
         }
-        else if (_step < parts + _job.SubParts.Count)
+        if (_step < parts + _job.SubParts.Count)
         {
             FitSubParts(car, _job.SubParts[_step - parts]);
             SlowStep.Stop(start, $"sub parts on {name}'s car");
+            _step++;
+            return;
         }
-        else
-        {
-            Finish(car);
-            SlowStep.Stop(start, $"finishing {name}'s car");
-        }
+        var what = Finish(car, _step - parts - _job.SubParts.Count);
         _step++;
+        if (what != null)
+            SlowStep.Stop(start, $"{what} on {name}'s car");
     }
 
     // the catalogs sit in shared fields that every npc car load overwrites, and the spawn only ever loads the first front end.
@@ -392,7 +402,10 @@ internal sealed class RemoteBuilds
         try
         {
             Hold(origin.carOrigin_exteriorCustomization);
+            Hold(origin.carOrigin_interiorCustomization);
             Hold(_parent.carOrigin_wheelCustomization);
+            Hold(_parent.carOrigin_wheelStockRims);
+            Hold(_parent.carOrigin_performanceCustomization);
             var swaps = origin.carOrigin_frontEndSwaps;
             for (var i = 0; i < swaps.Count; i++)
                 if (swaps[i].frontEndSwap_chassisType == front)
@@ -404,12 +417,28 @@ internal sealed class RemoteBuilds
         }
     }
 
-    private void Hold(AssetReference catalog)
+    private static void Hold(AssetReference catalog)
     {
         if (catalog == null || string.IsNullOrEmpty(catalog.AssetGUID) || !HeldCatalogs.Add(catalog.AssetGUID))
             return;
         Addressables.LoadAssetAsync<GameObject>(catalog.RuntimeKey);
-        _log.LogInfo($"Holding catalog {catalog.AssetGUID}, {HeldCatalogs.Count} held");
+        NetBehaviour.Log.LogInfo($"Holding catalog {catalog.AssetGUID}, {HeldCatalogs.Count} held");
+    }
+
+    // the car itself goes the same way as its catalogs, and loading it back is most of a respawn
+    public static void HoldModel(int key)
+    {
+        try
+        {
+            var entries = PlanetJem.Core.GameMaster.CarOrigins?.entries_;
+            var entry = (key >> 16) - 1;
+            if (entries != null && entry >= 0 && entry < entries.Count)
+                Hold(entries[entry].Origin);
+        }
+        catch (Exception e)
+        {
+            NetBehaviour.Log.LogWarning($"Couldn't hold model {key}: {e.Message}");
+        }
     }
 
     // a car only changes when its owner sends a new build, so one that lost parts here gets built again from the same build
@@ -425,13 +454,14 @@ internal sealed class RemoteBuilds
         var wheelsGone = CheckWheels(remote);
         if (inUse(remote))
             return;
-        var whole = Whole(remote.Car);
+        var gone = new System.Text.StringBuilder();
+        var whole = Whole(remote.Car, gone);
         if (whole >= remote.Fitted * MinWhole && !wheelsGone)
             return;
         if (remote.Rebuilds > 0 && Time.unscaledTime - remote.RebuiltAt > RebuildFreshSeconds)
             remote.Rebuilds = 0;
         var again = remote.Rebuilds < MaxRebuilds;
-        _log.LogWarning($"{remote.Name}'s car lost parts, {whole} of {remote.Fitted} left, {(again ? "building it again" : "giving up")}");
+        _log.LogWarning($"{remote.Name}'s car lost parts, {whole} of {remote.Fitted} left, {(again ? "building it again" : "giving up")}, gone:{gone}");
         remote.Fitted = 0;
         if (!again)
             return;
@@ -541,14 +571,23 @@ internal sealed class RemoteBuilds
         return $"{total} meshes, {gone} gone, {off} off";
     }
 
-    private static int Whole(GameObject car)
+    // only what's drawn. the swapped out stock parts stay on the car switched off, and the game unloading those when you
+    // change your own car to another model isn't damage, rebuilding for it was a few seconds of low fps for nothing
+    private static int Whole(GameObject car) => Whole(car, null);
+
+    private static int Whole(GameObject car, System.Text.StringBuilder gone)
     {
         var whole = 0;
+        var listed = 0;
         foreach (var mesh in car.GetComponentsInChildren<MeshRenderer>(true))
         {
+            if (!mesh.enabled || !RemoteCars.OnUnder(mesh.transform, car.transform))
+                continue;
             var filter = mesh.GetComponent<MeshFilter>();
             if (filter != null && filter.sharedMesh != null && mesh.sharedMaterial != null)
                 whole++;
+            else if (gone != null && listed++ < GoneListed)
+                gone.Append($" {mesh.transform.parent?.name}/{mesh.name}");
         }
         return whole;
     }
@@ -568,7 +607,7 @@ internal sealed class RemoteBuilds
 
     private static string Named(GameObject root) => root != null ? root.name : "none";
 
-    private void Fit(CarLocalCustom car, PartRef part)
+    private bool Fit(CarLocalCustom car, PartRef part)
     {
         var parent = _parent;
         var lend = parent != null && _extRoot != null;
@@ -588,12 +627,13 @@ internal sealed class RemoteBuilds
             if (CarApplicator.TryApplyPart(car, part, result))
             {
                 _fitted++;
-                return;
+                return true;
             }
-            _log.LogInfo($"{_remote.Name}: no {part.PartType} {part.Index}: {result.Error}");
-            // the game says this one itself, the car's interior is one merged mesh so it never takes these 
+            // the game says this one itself, the car's interior is one merged mesh so it never takes these
             if (result.Error != null && result.Error.Contains("must be uncombined"))
                 _neverFit++;
+            else
+                _log.LogInfo($"{_remote.Name}: no {part.PartType} {part.Index}: {result.Error}");
         }
         catch (Exception e)
         {
@@ -609,6 +649,7 @@ internal sealed class RemoteBuilds
             }
         }
         _skipped++;
+        return false;
     }
 
     private void PrepareTire(CarLocalCustom car, PartRef part)
@@ -661,27 +702,41 @@ internal sealed class RemoteBuilds
     }
 
     // new parts bring colliders and sounds, a ghost can't have those
-    private void Finish(CarLocalCustom car)
+    // a frame for each, all of it at once was a 20 to 50 ms hitch per car
+    private string Finish(CarLocalCustom car, int stage)
     {
-        ApplyStance(car);
-        try
+        switch (stage)
         {
-            car.car_updateNeonColor(true, _job.NeonExterior, _job.NeonInterior);
+            case 0:
+                ApplyStance(car);
+                return "stance";
+            case 1:
+                try
+                {
+                    car.car_updateNeonColor(true, _job.NeonExterior, _job.NeonInterior);
+                }
+                catch (Exception e)
+                {
+                    _log.LogWarning($"{_remote.Name}: neon failed: {e.Message}");
+                }
+                HideRemovedParts(car);
+                return "neon and removed parts";
+            case 2:
+                RemoteCars.MakeGhost(_car);
+                HideMergedWheels();
+                return "ghosting";
+            case 3:
+                LogShell();
+                return "logging the shell";
+            case 4:
+                LogWheels();
+                return "logging the wheels";
         }
-        catch (Exception e)
-        {
-            _log.LogWarning($"{_remote.Name}: neon failed: {e.Message}");
-        }
-        HideRemovedParts(car);
-        RemoteCars.MakeGhost(_car);
-        HideMergedWheels();
         _remote.NextRest = 0f;
         _remote.PaintedCar = null;
         _remote.Fitted = Whole(_car);
         _remote.WheelsSeen = null;
-        _log.LogInfo($"Fitted {_fitted} parts to {_remote.Name}'s car, {_skipped} skipped, {_remote.Fitted} meshes, {Broken(_car)} broken");
-        LogShell();
-        LogWheels();
+        _log.LogInfo($"Fitted {_fitted} parts to {_remote.Name}'s car, {_skipped} skipped, {_neverFit} of those interior parts a merged car can't take, {_remote.Fitted} meshes, {Broken(_car)} broken");
         // a part that didnt fit leaves the old panel or a hole until the owner sends a new build, does a full fresh spawn and fit currently lags a bit
         if (_skipped > _neverFit && _remote.Rebuilds < MaxRebuilds)
         {
@@ -691,6 +746,7 @@ internal sealed class RemoteBuilds
             _remote.BuildOn = null;
         }
         _remote = null;
+        return null;
     }
 
     private void ApplyStance(CarLocalCustom car)
